@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lasanalysis"
+version = "0.1.0"
+description = "Quick-look petrophysics for LAS well logs (Kansas Geological Survey data)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "lasio>=0.31",
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "matplotlib>=3.8",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "jupyter",
+    "nbconvert>=7",
+    "ipykernel",
+    "nbstripout",
+    "pre-commit",
+]
+
+[tool.setuptools]
+packages = ["lasanalysis"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
