@@ -1,0 +1,29 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt -e .
+      - run: pytest -q
+      - name: Execute the notebook
+        run: jupyter nbconvert --to notebook --execute --ExecutePreprocessor.timeout=600 --output /tmp/executed.ipynb KansasLAS.ipynb
+      - name: Notebook outputs are stripped in git
+        run: |
+          python - <<'EOF'
+          import json, sys
+          nb = json.load(open("KansasLAS.ipynb"))
+          bad = [i for i, c in enumerate(nb["cells"]) if c.get("outputs") or c.get("execution_count")]
+          if bad:
+              sys.exit(f"cells with committed outputs: {bad} (run nbstripout)")
+          EOF
