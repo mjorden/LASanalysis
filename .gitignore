@@ -13,8 +13,9 @@ env/
 .ipynb_checkpoints/
 *.nbconvert.ipynb
 
-# KGS download cache
+# KGS download cache and multiwell outputs
 data/cache/
+output/
 
 # Editors / OS
 .vscode/

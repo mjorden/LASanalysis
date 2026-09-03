@@ -28,6 +28,7 @@ end on every push.
 | `lasanalysis/petro.py` | Pure-numpy: `vshale_linear`, `vshale_larionov`, `density_porosity`, `neutron_density_crossover`, `archie_sw`, `MATRIX_DENSITY` |
 | `lasanalysis/plot.py` | `plot_tracks` (declarative tracks, one inverted depth axis, twin x-axes), `crossplot_neutron_density`, `pickett_plot` |
 | `lasanalysis/kgs.py` | `search_wells` (township / range / section / lease / operator), `fetch_las` (download a LAS by KID, cached) |
+| `lasanalysis/multiwell.py` | `run_well`, `run_search`, and a CLI: search → fetch → analyse → track plot + `summary.csv` per batch |
 | `KansasLAS.ipynb` | The walk-through on the Pearson #1-35 well |
 | `data/` | Two wells from KGS (see below) |
 
@@ -85,9 +86,14 @@ phid = density_porosity(df["RHOB"], "limestone")        # or a number, g/cc
 sw   = archie_sw(df["RT"], phid, rw=0.05, a=1, m=2, n=2)
 ```
 
-Use `pickett_plot(rt, phi, rw, ...)` to pick `Rw` and `m`: water-bearing
-points fall on the Sw = 1 line. The notebook's `RW = 0.05` is a placeholder,
-not a calibrated value for this well.
+`fit_water_line(rt, phi)` picks `Rw` and `m` from the log itself: it takes the
+low-Rt envelope of the clean points on a Pickett plot (5th percentile of Rt
+per porosity bin) and fits the Sw = 1 line, whose slope is `-m` and intercept
+`a·Rw`. For Pearson #1-35, neutron-density porosity with a 6 % cutoff gives
+**m = 2.0, Rw = 0.03** (notebook section 5 shows the sensitivity to porosity
+source and cutoff — below ~6 % porosity the envelope flattens and the apparent
+`m` drops toward 1.3). The clean wet zone at 3580–3650 ft agrees. `a = 1` and
+`n = 2` are assumed.
 
 ### More wells from KGS
 
@@ -112,6 +118,23 @@ it to need a fix when KGS changes their HTML. KGS also publishes a full index
 of every well with an LAS file as
 [`ks_las_files.zip`](https://www.kgs.ku.edu/PRS/Ora_Archive/ks_las_files.zip)
 if you want to query offline.
+
+### Many wells at once
+
+```bash
+python -m lasanalysis.multiwell --township 13 --range 22 --ew W --section 35 --out output/T13S_R22W_35
+python -m lasanalysis.multiwell --lease PEARSON --out output/pearson --depth 3400 4200
+python -m lasanalysis.multiwell --las data/*.las --out output/local --param rw=0.04 --param matrix=dolomite
+```
+
+Each run writes one track plot and one `<kid>_derived.csv` (Vsh, PHID, PHIN,
+PHIND, Sw, PAY flag) per well, plus `summary.csv` with depth range, curves
+found, mean porosity and Sw, pay feet (`phi > 8 %`, `Vsh < 0.3`, `Sw < 0.5`
+by default) and the parameters used. Fetched LAS files are cached under
+`--cache` (default `data/cache/`). A well that fails to download or parse gets
+an `error` row instead of stopping the batch. Defaults are the Pearson picks
+(`rw=0.03`, `m=2`, limestone); override any of
+`multiwell.DEFAULT_PARAMS` with `--param KEY=VALUE`.
 
 ## Data
 
