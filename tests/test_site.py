@@ -17,10 +17,12 @@ def test_build_site_writes_both_wells_and_index(tmp_path):
     index = (tmp_path / "index.html").read_text(encoding="utf-8")
     assert 'href="pearson.html"' in index and 'href="pbw.html"' in index
     assert "15-195-23011" in index and "15-165-22116" in index
-    for page, well in (("pearson.html", "Pearson Family #1-35"), ("pbw.html", "PBW #1-32")):
+    assert "Rw 0.03" in index and "Rw 0.06" in index  # per-well picks shown on the cards
+    for page, well, rw in (("pearson.html", "Pearson Family #1-35", 0.03), ("pbw.html", "PBW #1-32", 0.06)):
         html = (tmp_path / page).read_text(encoding="utf-8")
         m = re.search(r"const D = (\{.*?\});\nconst P0", html, flags=re.S)
         d = json.loads(m.group(1).replace("<\\/", "</"))
         assert d["title"] == well
+        assert d["params"]["rw"] == rw and d["params"]["m"] == 2.0
         assert "RT" in d["curves"] and "RHOB" in d["curves"]
         assert any(t["curves"] == ["SW"] for t in d["tracks"])
