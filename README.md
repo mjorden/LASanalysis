@@ -6,6 +6,9 @@ track plot on one shared depth axis, and compute Vshale, density porosity,
 neutron–density crossover and Archie Sw. Includes a small client for the KGS
 LAS-file index so the same workflow runs on any Kansas well.
 
+**Live viewers:** <https://mjorden.github.io/LASanalysis/> — both wells,
+rebuilt from `scripts/build_site.py` on every push to master.
+
 ## Setup
 
 Python 3.10+ (verified on 3.12).
