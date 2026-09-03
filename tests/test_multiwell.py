@@ -175,6 +175,22 @@ def test_run_search_chains_search_fetch_run_and_survives_failures(tmp_path):
     assert not (tmp_path / "nocoords" / "wells.png").exists()
 
 
+def test_cli_index_search_offline(tmp_path, monkeypatch):
+    # --index: search the offline index; fetch/analysis stubbed so no network is touched
+    from lasanalysis import kgs
+
+    fixture = Path(__file__).parent / "fixtures" / "ks_las_files_sample.zip"
+    monkeypatch.setattr(multiwell.kgs, "fetch_las", lambda kid, cache_dir, url=None: PEARSON)
+    monkeypatch.setattr(multiwell.kgs, "add_well_info", lambda rows, cache_dir=None, log=None: rows)
+    rc = multiwell.main(["--index", str(fixture), "--within", "38.88", "-99.73", "5", "--out", str(tmp_path), "--depth", "3400", "4200", "--no-plot"])
+    assert rc == 0
+    s = pd.read_csv(tmp_path / "summary.csv")
+    assert list(s["kid"]) == [1046139243] and s.loc[0, "error"] != s.loc[0, "error"] or s.loc[0, "error"] == ""  # NaN or ""
+    assert s.loc[0, "well"] == "PEARSON FAMILY 1-35"
+    with pytest.raises(SystemExit):  # --within without --index
+        multiwell.main(["--township", "13", "--within", "38.88", "-99.73", "5", "--out", str(tmp_path)])
+
+
 def test_plot_wells(tmp_path):
     from lasanalysis.multiwell import plot_wells
 

@@ -371,6 +371,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     src.add_argument("--county", default="")
     src.add_argument("--api", default="")
     src.add_argument("--las", nargs="*", help="local LAS files instead of a KGS search")
+    src.add_argument("--index", nargs="?", const="data/cache/ks_las_files.zip", metavar="ZIP",
+                     help="search KGS's offline index (ks_las_files.zip) instead of scraping; downloads it to the given path if missing")
+    src.add_argument("--within", nargs=3, type=float, metavar=("LAT", "LON", "KM"), help="with --index: wells within KM of LAT,LON")
     ap.add_argument("--out", required=True, help="output directory")
     ap.add_argument("--cache", default="data/cache", help="where fetched LAS files go")
     ap.add_argument("--depth", nargs=2, type=float, metavar=("TOP", "BASE"))
@@ -400,9 +403,21 @@ def main(argv: Optional[List[str]] = None) -> int:
             ).items()
             if v not in (None, "")
         }
+        if args.within:
+            search_kwargs["within"] = tuple(args.within)
         if not search_kwargs:
             ap.error("give KGS search filters or --las files")
-        summary = run_search(search_kwargs, args.out, args.cache, params, depth, plot=not args.no_plot, html=args.html, coords=not args.no_coords)
+        search = kgs.search_wells
+        if args.index is not None:
+            index_df = kgs.load_index(kgs.fetch_index(args.index))
+            search_kwargs.pop("county", None)  # the index has no county column
+
+            def search(**kw):  # noqa: F811 - offline variant of kgs.search_wells
+                return kgs.search_index(index_df, **kw)
+
+        elif args.within:
+            ap.error("--within needs --index")
+        summary = run_search(search_kwargs, args.out, args.cache, params, depth, plot=not args.no_plot, html=args.html, coords=not args.no_coords, search=search)
 
     cols = [c for c in ("kid", "well", "api", "lat", "lon", "depth_top", "depth_base", "phind_mean", "sw_mean", "pay_ft", "rw_envelope", "rw_rwa", "error") if c in summary]
     with pd.option_context("display.width", 200, "display.max_columns", 20):
