@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 from urllib.parse import urlparse
 
+import pandas as pd
 import requests
 
 CHASM_URL = "https://chasm.kgs.ku.edu/ords"
@@ -183,6 +184,146 @@ def search_wells(
     rows = parse_search_html(r.text)
     if with_coords:
         add_well_info(rows, base_url=base_url, session=s, timeout=timeout, cache_dir=cache_dir)
+    return rows
+
+
+# --------------------------------------------------------------------------- offline index (#30)
+
+INDEX_URL = "https://www.kgs.ku.edu/PRS/Ora_Archive/ks_las_files.zip"
+
+#: Index column -> row key (same shape as :func:`parse_search_html` rows where they overlap).
+_INDEX_COLUMNS = {
+    "KGS_ID": "well_kid", "Latitude": "lat_nad27", "Longitude": "lon_nad27", "Location": "location",
+    "Operator": "operator", "Lease": "well", "API": "api", "API_NUM_NODASH": "api_nodash",
+    "Elevation": "elevation", "Elev_Ref": "elevation_datum", "Depth_start": "depth_start", "Depth_stop": "depth_stop",
+    "URL": "index_url",
+}
+
+
+def fetch_index(dest="data/cache/ks_las_files.zip", *, url: str = INDEX_URL, session=None, timeout: float = 300,
+                max_age_days: Optional[float] = 30) -> Path:
+    """Download KGS's whole-state LAS index (~1.4 MB zip) unless a fresh copy is cached."""
+    import time
+
+    dest = Path(dest)
+    if dest.exists() and (max_age_days is None or (time.time() - dest.stat().st_mtime) < max_age_days * 86400):
+        return dest
+    r = _session(session).get(url, timeout=timeout)
+    r.raise_for_status()
+    if not r.content.startswith(b"PK"):
+        raise KGSError(f"{url} did not return a zip file")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(r.content)
+    return dest
+
+
+def index_las_path(index_url: str) -> Optional[str]:
+    """``<folder>/<las_kid>.las`` from an index URL, or None when the row has no folder.
+
+    The index's host (``www.kgs.ku.edu/b_1/...``) no longer serves files, but
+    its path tail is exactly the blob store's, so only the tail is kept.
+    About 1,700 rows carry a folder-less ``https://www.kgs.ku.edu//<kid>.las``;
+    those need :func:`resolve_las_url`.
+    """
+    m = re.search(r"/WellLogs/([^/]+)/(\d+)\.las$", str(index_url))
+    return f"{m.group(1)}/{m.group(2)}.las" if m else None
+
+
+def load_index(path) -> "pd.DataFrame":
+    """Parse ``ks_las_files.zip`` (or the .txt inside it) into a DataFrame, one row per LAS file.
+
+    Columns: ``kid`` (LAS KID, from the URL), ``well_kid``, ``well``, ``api``,
+    ``api_nodash``, ``operator``, ``location``, ``township``, ``range``, ``ew``,
+    ``section``, ``lat_nad27``, ``lon_nad27`` (the index carries NAD27; the
+    well page has NAD83), ``elevation``, ``elevation_datum``, ``depth_start``,
+    ``depth_stop``, ``las_path`` (``<folder>/<kid>.las`` on the blob store, or
+    None), ``las_url`` (blob URL or None), ``index_url`` (as published).
+    """
+    import io
+    import zipfile
+
+    import pandas as pd
+
+    path = Path(path)
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as z:
+            name = next(n for n in z.namelist() if n.lower().endswith((".txt", ".csv")))
+            raw = z.read(name)
+    else:
+        raw = path.read_bytes()
+    df = pd.read_csv(io.BytesIO(raw), dtype=str, keep_default_na=False, encoding="utf-8", encoding_errors="replace")
+    missing = [c for c in _INDEX_COLUMNS if c not in df.columns]
+    if missing:
+        raise KGSError(f"index is missing columns {missing}; KGS may have changed the file")
+    df = df.rename(columns=_INDEX_COLUMNS)
+    for c in ("well_kid",):
+        df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
+    for c in ("lat_nad27", "lon_nad27", "elevation", "depth_start", "depth_stop"):
+        df[c] = pd.to_numeric(df[c].str.strip(), errors="coerce")
+    df["elevation_datum"] = df["elevation_datum"].str.strip().str.upper().replace("", None)
+    df["las_path"] = df["index_url"].map(index_las_path)
+    df["kid"] = pd.to_numeric(df["index_url"].str.extract(r"/(\d+)\.las$")[0], errors="coerce").astype("Int64")
+    df["las_url"] = df["las_path"].map(lambda p: f"{BLOB_URL}/{p}" if isinstance(p, str) else None)
+    loc = df["location"].str.extract(r"T(\d+)S\s+R(\d+)([EW]),\s*Sec\.\s*(\d+)")
+    df["township"] = pd.to_numeric(loc[0], errors="coerce").astype("Int64")
+    df["range"] = pd.to_numeric(loc[1], errors="coerce").astype("Int64")
+    df["ew"] = loc[2]
+    df["section"] = pd.to_numeric(loc[3], errors="coerce").astype("Int64")
+    cols = ["kid", "well_kid", "well", "api", "api_nodash", "operator", "location", "township", "range", "ew", "section",
+            "lat_nad27", "lon_nad27", "elevation", "elevation_datum", "depth_start", "depth_stop", "las_path", "las_url", "index_url"]
+    return df[cols]
+
+
+def search_index(
+    index: "pd.DataFrame",
+    township=None,
+    range_=None,
+    ew=None,
+    section=None,
+    lease: str = "",
+    operator: str = "",
+    api: str = "",
+    within: Optional[tuple] = None,
+) -> List[dict]:
+    """Filter a :func:`load_index` frame the way :func:`search_wells` filters KGS, offline.
+
+    Text filters are case-insensitive substrings (like the KGS form).
+    ``within=(lat, lon, km)`` keeps wells inside a radius (great-circle, NAD27
+    coordinates as the index carries them). Returns rows shaped like
+    :func:`parse_search_html` plus the index's extra columns; ``las_url`` is
+    None for the folder-less rows — :func:`fetch_las` resolves those by KID.
+    """
+    import numpy as np
+
+    _validate_location(township, range_, ew, section)
+    df = index
+    if township is not None:
+        df = df[df["township"] == int(township)]
+    if range_ is not None:
+        df = df[(df["range"] == int(range_)) & (df["ew"] == ew)]
+    if section is not None:
+        df = df[df["section"] == int(section)]
+    if lease:
+        df = df[df["well"].str.contains(lease, case=False, regex=False)]
+    if operator:
+        df = df[df["operator"].str.contains(operator, case=False, regex=False)]
+    if api:
+        a = re.sub(r"\D", "", api)
+        df = df[df["api_nodash"].str.startswith(a) | df["api"].str.replace("-", "").str.startswith(a)]
+    if within is not None:
+        lat0, lon0, km = within
+        lat, lon = np.deg2rad(df["lat_nad27"].to_numpy(float)), np.deg2rad(df["lon_nad27"].to_numpy(float))
+        d = 2 * 6371.0 * np.arcsin(np.sqrt(np.sin((lat - np.deg2rad(lat0)) / 2) ** 2 + np.cos(lat) * np.cos(np.deg2rad(lat0)) * np.sin((lon - np.deg2rad(lon0)) / 2) ** 2))
+        df = df.assign(distance_km=d)
+        df = df[df["distance_km"] <= km].sort_values("distance_km")
+    rows = []
+    for rec in df.to_dict("records"):
+        row = {k: (None if v is None or (isinstance(v, float) and np.isnan(v)) or v is pd.NA else v) for k, v in rec.items()}
+        for k in ("kid", "well_kid", "township", "range", "section"):
+            if row.get(k) is not None:
+                row[k] = int(row[k])
+        row["header_url"] = f"{CHASM_URL}/las.lasd5.ViewLasHeader?f_kid={row['kid']}" if row.get("kid") else None
+        rows.append(row)
     return rows
 
 

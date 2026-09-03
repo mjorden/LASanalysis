@@ -18,6 +18,8 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt -e .
+      - name: Install Chromium for the viewer browser test
+        run: python -m playwright install --with-deps chromium
       - run: pytest -q
       - name: Execute the notebook
         run: jupyter nbconvert --to notebook --execute --ExecutePreprocessor.timeout=600 --output /tmp/executed.ipynb KansasLAS.ipynb

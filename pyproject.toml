@@ -26,6 +26,7 @@ dev = [
     "ipykernel",
     "nbstripout",
     "pre-commit",
+    "playwright",
 ]
 
 [tool.setuptools]

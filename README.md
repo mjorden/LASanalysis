@@ -19,7 +19,10 @@ pip install -r requirements.txt -e .
 jupyter notebook KansasLAS.ipynb
 ```
 
-Run the tests with `pytest`. The notebook is regenerated from
+Run the tests with `pytest`. The viewer's JavaScript has a headless-browser
+test (`tests/test_viewer_browser.py`) that needs
+`python -m playwright install chromium` once; it skips itself when Playwright
+or the browser is absent, and CI installs both. The notebook is regenerated from
 `scripts/build_notebook.py` and committed with outputs stripped
 (`pre-commit install` sets up `nbstripout`). CI executes the notebook end to
 end on every push.
@@ -164,10 +167,24 @@ under) and streams it to disk, refusing anything that does not start like a
 LAS file — and refusing any URL that is not on the KGS blob host, since
 `las_url` values are scraped from HTML and must never become an arbitrary
 request target (#18). There is no documented API — this scrapes two KGS pages, so expect
-it to need a fix when KGS changes their HTML. KGS also publishes a full index
-of every well with an LAS file as
+it to need a fix when KGS changes their HTML.
+
+**Offline index (#30).** KGS also publishes every LAS file it holds as
 [`ks_las_files.zip`](https://www.kgs.ku.edu/PRS/Ora_Archive/ks_las_files.zip)
-if you want to query offline.
+(~1.4 MB, ~29,000 rows). `kgs.fetch_index()` caches it, `kgs.load_index()`
+parses it, and `kgs.search_index(df, township=…, lease=…, within=(lat, lon, km))`
+filters it with the same arguments as `search_wells` plus a radius search —
+no scraping, and it covers older logs filed under township folders (e.g.
+`01S02E/`) that the per-year probe never finds. Two things to know about the
+file: its coordinates are **NAD27** (the well page has NAD83), and its `URL`
+column points at a host that no longer serves files — the path tail is what
+counts, and the loader rebuilds the blob URL from it (about 1,700 rows have no
+folder at all; those fall back to `resolve_las_url`). From the CLI:
+
+```bash
+python -m lasanalysis.multiwell --index --within 38.88 -99.73 25 --out output/near_pearson
+python -m lasanalysis.multiwell --index --operator "Downing-Nelson" --out output/downing
+```
 
 ### Interactive viewer
 
