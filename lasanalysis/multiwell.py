@@ -150,8 +150,12 @@ def run_well(
     meta: Optional[dict] = None,
     dpi: int = 110,
     plot: bool = True,
+    html: bool = False,
 ) -> dict:
-    """Load one LAS, analyse it, save ``<stem>.png`` (and ``.csv`` of derived curves), return the summary row."""
+    """Load one LAS, analyse it, save ``<stem>.png`` (and ``.csv`` of derived curves), return the summary row.
+
+    ``html=True`` also writes ``<stem>.html``, the interactive viewer (see :mod:`lasanalysis.viewer`).
+    """
     las_path = Path(las_path)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -172,6 +176,14 @@ def run_well(
         fig.savefig(png)
         plt.close(fig)
         row["png"] = png.name
+    row["html"] = ""
+    if html:
+        from .viewer import _well_meta, write_viewer
+
+        vmeta = {**_well_meta(las), "file": las_path.name, **{k: str(v) for k, v in (meta or {}).items() if v not in (None, "")}}
+        out = write_viewer(df.drop(columns=[c for c in ("VSH", "PHID", "PHIN", "PHIND", "SW", "PAY") if c in df]),
+                           out_dir / f"{stem}.html", params, depth_range, meta=vmeta)
+        row["html"] = out.name
     return row
 
 
@@ -229,6 +241,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--depth", nargs=2, type=float, metavar=("TOP", "BASE"))
     ap.add_argument("--param", action="append", default=[], metavar="KEY=VALUE", help=f"override any of {sorted(DEFAULT_PARAMS)}")
     ap.add_argument("--no-plot", action="store_true")
+    ap.add_argument("--html", action="store_true", help="also write an interactive viewer per well")
     args = ap.parse_args(argv)
 
     params: Dict[str, float] = {}
@@ -241,7 +254,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     matplotlib.use("Agg")
 
     if args.las:
-        rows = [run_well(p, args.out, params, depth, plot=not args.no_plot) for p in args.las]
+        rows = [run_well(p, args.out, params, depth, plot=not args.no_plot, html=args.html) for p in args.las]
         summary = pd.DataFrame(rows)
         summary.to_csv(Path(args.out) / "summary.csv", index=False)
     else:
@@ -255,7 +268,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         }
         if not search_kwargs:
             ap.error("give KGS search filters or --las files")
-        summary = run_search(search_kwargs, args.out, args.cache, params, depth, plot=not args.no_plot)
+        summary = run_search(search_kwargs, args.out, args.cache, params, depth, plot=not args.no_plot, html=args.html)
 
     cols = [c for c in ("kid", "well", "api", "depth_top", "depth_base", "phind_mean", "sw_mean", "pay_ft", "error") if c in summary]
     with pd.option_context("display.width", 200, "display.max_columns", 20):
