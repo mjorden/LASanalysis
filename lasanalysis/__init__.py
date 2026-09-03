@@ -2,10 +2,12 @@
 
 Modules
 -------
-load   read a LAS file, mask undeclared sentinels, normalise mnemonics
-petro  pure-numpy petrophysics: Vshale, density porosity, crossover, Archie Sw
-plot   track plots, neutron-density crossplot, Pickett plot
-kgs    fetch LAS files from the Kansas Geological Survey by KID
+load       read a LAS file, mask undeclared sentinels, normalise mnemonics
+petro      pure-numpy petrophysics: Vshale, density porosity, crossover, Archie Sw,
+           Pickett water-line fit
+plot       track plots, neutron-density crossplot, Pickett plot
+kgs        search the Kansas Geological Survey LAS index, fetch LAS files by KID
+multiwell  run the workflow over many wells (search -> fetch -> analyse -> summary.csv)
 """
 
 from .load import ALIASES, clean_frame, curves, find_curve, read_las, read_log_csv, standardize
@@ -13,6 +15,7 @@ from .petro import (
     MATRIX_DENSITY,
     archie_sw,
     density_porosity,
+    fit_water_line,
     neutron_density_crossover,
     vshale_larionov,
     vshale_linear,
@@ -28,6 +31,7 @@ __all__ = [
     "curves",
     "density_porosity",
     "find_curve",
+    "fit_water_line",
     "neutron_density_crossover",
     "pickett_plot",
     "plot_tracks",

@@ -118,3 +118,53 @@ def archie_sw_lines(phi, rw: float, sw_values=(1.0, 0.5, 0.25, 0.1), a: float = 
     phi = _arr(phi)
     with np.errstate(divide="ignore", invalid="ignore"):
         return {sw: (a * rw) / (phi**m * sw**n) for sw in sw_values}
+
+
+def fit_water_line(
+    rt,
+    phi,
+    q: float = 5.0,
+    phi_min: float = 0.06,
+    phi_max: float = 0.35,
+    bin_width: float = 0.05,
+    min_per_bin: int = 15,
+    a: float = 1.0,
+) -> Dict[str, object]:
+    """Fit the Sw = 1 line of a Pickett plot from the low-Rt envelope.
+
+    Points are binned in ``log10(phi)`` (``bin_width`` decades); in each bin
+    the ``q``-th percentile of ``log10(Rt)`` is taken as the water line. A
+    straight line through those envelope points has slope ``-m`` and
+    intercept ``log10(a * Rw)``.
+
+    Feed it *clean* points only (low Vsh). Keep ``phi_min`` at a few percent:
+    below that, shale conductivity and matrix-density error flatten the
+    envelope and drag ``m`` toward 1.
+
+    Returns ``{"m", "rw", "a", "n_points", "envelope"}`` where ``envelope`` is
+    an ``(n_bins, 3)`` array of ``[log10 phi, log10 Rt, count]``.
+    Raises ``ValueError`` with fewer than three usable bins.
+    """
+    rt = _arr(rt)
+    phi = _arr(phi)
+    ok = np.isfinite(rt) & np.isfinite(phi) & (rt > 0) & (phi >= phi_min) & (phi <= phi_max)
+    lp, lr = np.log10(phi[ok]), np.log10(rt[ok])
+    edges = np.arange(np.log10(phi_min), np.log10(phi_max) + bin_width, bin_width)
+    idx = np.digitize(lp, edges)
+    env = []
+    for b in np.unique(idx):
+        sel = idx == b
+        if sel.sum() < min_per_bin:
+            continue
+        env.append((lp[sel].mean(), np.percentile(lr[sel], q), int(sel.sum())))
+    if len(env) < 3:
+        raise ValueError(f"only {len(env)} porosity bins with >= {min_per_bin} points; need 3")
+    env_arr = np.array(env)
+    slope, intercept = np.polyfit(env_arr[:, 0], env_arr[:, 1], 1)
+    return {
+        "m": float(-slope),
+        "rw": float(10**intercept / a),
+        "a": float(a),
+        "n_points": int(ok.sum()),
+        "envelope": env_arr,
+    }
