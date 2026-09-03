@@ -16,6 +16,7 @@ notebook or test can see exactly how much data was discarded.
 from __future__ import annotations
 
 import os
+import re
 from typing import Dict, Iterable, Optional
 
 import lasio
@@ -50,21 +51,45 @@ ALIASES: Dict[str, list] = {
     "RHOB": ["RHOB", "DEN", "ZDEN", "RHOZ"],
     "NPHI": ["CNPOR", "NPHI", "NPOR", "TNPH", "CNC"],
     "DPHI": ["DPOR", "DPHI", "PHID"],
+    "SPHI": ["SPOR", "SPHI", "PHIS"],
     "DT": ["DT", "DTC", "AC", "DTCO"],
     "CALI": ["DCAL", "CALI", "CAL", "HCAL"],
 }
 
 
+def _norm_unit(unit: Optional[str]) -> str:
+    return re.sub(r"\s+", "", (unit or "").upper())
+
+
 def _is_resistivity(unit: str) -> bool:
-    return "OHM" in unit.upper()
+    return "OHM" in _norm_unit(unit)
 
 
 def _is_porosity_pu(unit: str) -> bool:
-    return unit.strip().upper() in ("PU", "%")
+    return _norm_unit(unit) in ("PU", "%")
+
+
+#: Density units and the factor that converts the g/cc range into that unit.
+_DENSITY_UNITS = {"G/CC": 1.0, "G/CM3": 1.0, "GM/CC": 1.0, "G/C3": 1.0, "KG/M3": 1000.0}
+
+
+def _density_scale(unit: str) -> Optional[float]:
+    return _DENSITY_UNITS.get(_norm_unit(unit))
 
 
 def _is_density(unit: str) -> bool:
-    return unit.strip().upper().replace(" ", "") in ("G/CC", "G/CM3", "GM/CC", "KG/M3")
+    return _density_scale(unit) is not None
+
+
+#: Mnemonics that carry a density *correction* (legitimately near zero), never bulk density.
+_DENSITY_CORRECTION_NAMES = ("RHOC", "DRHO", "HDRA", "DCOR", "ZCOR")
+
+
+def _is_bulk_density_name(mnemonic: str) -> bool:
+    m = str(mnemonic).upper()
+    if m in _DENSITY_CORRECTION_NAMES:
+        return False
+    return find_curve([m], "RHOB") is not None
 
 
 def _clean_array(
@@ -111,25 +136,45 @@ def _clean_array(
     return data, counts
 
 
-def _kind_from_unit(unit: str) -> Optional[str]:
-    if _is_resistivity(unit):
-        return "resistivity"
-    if _is_porosity_pu(unit):
-        return "porosity_pu"
-    if _is_density(unit):
-        return "density"
-    return None
-
-
-#: Standard name -> rule kind, for frames that carry no units (CSV exports).
+#: Standard name -> rule kind, used when a curve carries no unit (CSV exports)
+#: or as the name half of the density decision.
 _KIND_FROM_STANDARD = {
     "RT": "resistivity",
     "RM": "resistivity",
     "RXO": "resistivity",
     "NPHI": "porosity_pu",
     "DPHI": "porosity_pu",
+    "SPHI": "porosity_pu",
     "RHOB": "density",
 }
+
+
+def rule_for(mnemonic: str, unit: Optional[str]) -> tuple:
+    """Which masking rule applies to a curve. Returns ``(kind, density_scale)``.
+
+    ``kind`` is ``"resistivity"``, ``"porosity_pu"``, ``"density"`` or None.
+    With a unit, resistivity and porosity are decided by the unit alone. The
+    density rule needs **both** a density unit and a bulk-density mnemonic
+    (RHOB / DEN / ZDEN / RHOZ): a density *correction* curve such as RHOC is in
+    g/cc too and is legitimately near zero, so it must never be range-masked.
+    Without a unit (CSV), the mnemonic decides via :data:`ALIASES`.
+    ``density_scale`` converts the g/cc range to the curve's unit (1000 for kg/m3).
+    """
+    if unit:
+        if _is_resistivity(unit):
+            return "resistivity", 1.0
+        if _is_porosity_pu(unit):
+            return "porosity_pu", 1.0
+        scale = _density_scale(unit)
+        if scale is not None:
+            return ("density", scale) if _is_bulk_density_name(mnemonic) else (None, 1.0)
+        return None, 1.0
+    for standard, kind in _KIND_FROM_STANDARD.items():
+        if find_curve([mnemonic], standard) is not None:
+            if kind == "density" and not _is_bulk_density_name(mnemonic):
+                return None, 1.0
+            return kind, 1.0
+    return None, 1.0
 
 
 def clean_curves(
@@ -141,26 +186,29 @@ def clean_curves(
 ) -> Dict[str, Dict[str, int]]:
     """Mask undeclared sentinels in place. Returns ``{mnemonic: {rule: n_masked}}``.
 
-    Rules (all leave the depth curve untouched; the rule is chosen from the
-    curve's unit):
+    Rules (all leave the depth curve untouched; see :func:`rule_for` for how a
+    curve is matched to a rule):
 
     ``extra_null``   value equals one of ``extra_nulls`` (any curve)
     ``off_scale``    value >= ``resistivity_ceiling`` (curves with an OHM unit)
     ``porosity``     value outside ``porosity_range_pu`` (curves in PU / %)
-    ``density``      value outside ``density_range`` (curves in g/cc)
+    ``density``      value outside ``density_range`` (g/cc, scaled for kg/m3) —
+                     bulk-density mnemonics only, never RHOC / DRHO corrections
     """
     extra_nulls = tuple(float(v) for v in extra_nulls)
     report: Dict[str, Dict[str, int]] = {}
     for i, curve in enumerate(las.curves):
         if i == 0:  # index / depth
             continue
+        kind, scale = rule_for(curve.mnemonic, curve.unit)
+        drange = None if density_range is None else (density_range[0] * scale, density_range[1] * scale)
         data, counts = _clean_array(
             np.asarray(curve.data, dtype=float),
-            _kind_from_unit(curve.unit),
+            kind,
             resistivity_ceiling,
             extra_nulls,
             porosity_range_pu,
-            density_range,
+            drange,
         )
         if counts:
             curve.data = data
@@ -191,11 +239,7 @@ def clean_frame(
     for col in out.columns:
         if not pd.api.types.is_numeric_dtype(out[col]):
             continue
-        kind = None
-        for standard, k in _KIND_FROM_STANDARD.items():
-            if find_curve([col], standard) is not None:
-                kind = k
-                break
+        kind, _ = rule_for(str(col), None)
         data, counts = _clean_array(
             out[col].to_numpy(dtype=float), kind, resistivity_ceiling, nulls, porosity_range_pu, density_range
         )

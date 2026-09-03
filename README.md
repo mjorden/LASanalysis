@@ -7,7 +7,8 @@ neutron–density crossover and Archie Sw. Includes a small client for the KGS
 LAS-file index so the same workflow runs on any Kansas well.
 
 **Live viewers:** <https://mjorden.github.io/LASanalysis/> — both wells,
-rebuilt from `scripts/build_site.py` on every push to master.
+rebuilt by `lasanalysis.site` (`python -m lasanalysis.site site/`) on every
+push to master.
 
 ## Setup
 
@@ -55,10 +56,14 @@ df = standardize(curves(las))   # RILD -> RT, CNPOR -> NPHI, DPOR -> DPHI, ...
 | `extra_null` | value in `EXTRA_NULLS` (`-999.0`) | RHOB uses `-999.000`, not the declared `-999.25` |
 | `off_scale` | resistivity (OHM unit) `>= 1e5` | RILD / RILM carry `100000.0` where the tool went off scale — 1,130 samples in the Pearson log |
 | `porosity` | PU / % curve outside `[-50, 100]` | DPOR reaches 58,000 pu on the bad-RHOB rows |
-| `density` | g/cc curve outside `[1.0, 3.5]` | RHOB has a few exact `0.0` |
+| `density` | **bulk-density** curve (RHOB / DEN / ZDEN / RHOZ, by name *and* unit) outside `[1.0, 3.5]` g/cc (`[1000, 3500]` for kg/m³) | RHOB has a few exact `0.0` |
 
-Every threshold is a keyword argument; `clean=False` gives you lasio's
-untouched output.
+The density rule is gated on the mnemonic as well as the unit: a density
+*correction* curve such as `RHOC` / `DRHO` is in g/cc too and legitimately
+sits near zero, so it is never range-masked (an earlier version wiped all
+3,767 RHOC samples in the Pearson log — #17). `rule_for(mnemonic, unit)`
+is the single decision point for both the LAS and CSV paths. Every threshold
+is a keyword argument; `clean=False` gives you lasio's untouched output.
 
 ### Track plot
 
@@ -126,7 +131,9 @@ returns one dict per LAS file with its download URL. `fetch_las` resolves a
 KID to its URL (pass `url=` from a search row to skip that; otherwise it reads
 the header page for the log year and probes the per-year folders KGS files
 under) and streams it to disk, refusing anything that does not start like a
-LAS file. There is no documented API — this scrapes two KGS pages, so expect
+LAS file — and refusing any URL that is not on the KGS blob host, since
+`las_url` values are scraped from HTML and must never become an arbitrary
+request target (#18). There is no documented API — this scrapes two KGS pages, so expect
 it to need a fix when KGS changes their HTML. KGS also publishes a full index
 of every well with an LAS file as
 [`ks_las_files.zip`](https://www.kgs.ku.edu/PRS/Ora_Archive/ks_las_files.zip)

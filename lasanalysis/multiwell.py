@@ -28,7 +28,7 @@ import pandas as pd
 
 from . import kgs
 from .load import curves, read_las, standardize
-from .petro import archie_sw, density_porosity, pu_to_frac, vshale_larionov
+from .petro import archie_sw, density_porosity, matrix_density, pu_to_frac, vshale_larionov
 from .plot import plot_tracks
 
 #: Petrophysical parameters. Rw / m are the Pearson #1-35 picks (see notebook
@@ -47,6 +47,31 @@ DEFAULT_PARAMS: Dict[str, float] = {
     "vsh_cut": 0.30,
     "sw_cut": 0.50,
 }
+
+
+def parse_params(items: List[str]) -> Dict[str, object]:
+    """``["rw=0.04", "matrix=dolomite"]`` -> validated overrides for :data:`DEFAULT_PARAMS`.
+
+    Raises ``ValueError`` for an unknown key, a non-numeric value, or a matrix
+    name that is not in :data:`~lasanalysis.petro.MATRIX_DENSITY`.
+    """
+    params: Dict[str, object] = {}
+    for kv in items:
+        k, sep, v = kv.partition("=")
+        if not sep or k not in DEFAULT_PARAMS:
+            raise ValueError(f"unknown param {k!r}; choose from {sorted(DEFAULT_PARAMS)}")
+        if k == "matrix":
+            try:
+                params[k] = float(v)
+            except ValueError:
+                matrix_density(v)  # raises with the valid names
+                params[k] = v.strip().lower()
+        else:
+            try:
+                params[k] = float(v)
+            except ValueError:
+                raise ValueError(f"param {k} must be a number, got {v!r}") from None
+    return params
 
 
 def analyze(df: pd.DataFrame, params: Optional[Dict[str, float]] = None) -> pd.DataFrame:
@@ -244,12 +269,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--html", action="store_true", help="also write an interactive viewer per well")
     args = ap.parse_args(argv)
 
-    params: Dict[str, float] = {}
-    for kv in args.param:
-        k, _, v = kv.partition("=")
-        if k not in DEFAULT_PARAMS:
-            ap.error(f"unknown param {k!r}")
-        params[k] = v if k == "matrix" else float(v)
+    try:
+        params = parse_params(args.param)
+    except ValueError as e:
+        ap.error(str(e))
     depth = tuple(args.depth) if args.depth else None
     matplotlib.use("Agg")
 

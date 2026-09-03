@@ -52,8 +52,9 @@ def test_density_porosity():
     assert density_porosity(2.80) < 0  # not clipped, on purpose
     with pytest.raises(ValueError):
         density_porosity(2.0, rho_matrix=1.0, rho_fluid=1.0)
-    with pytest.raises(KeyError):
+    with pytest.raises(ValueError, match="granite.*sandstone"):
         density_porosity(2.0, rho_matrix="granite")
+    assert density_porosity(2.71, " Limestone ") == 0.0  # case/whitespace tolerant
     assert set(MATRIX_DENSITY) >= {"sandstone", "limestone", "dolomite", "salt"}
 
 

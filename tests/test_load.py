@@ -31,6 +31,50 @@ def test_undeclared_rhob_sentinel_is_masked(pearson):
     assert np.nanmin(pearson["DPOR"]) >= -50.0
 
 
+def test_density_correction_curve_survives(pearson_las_path, pearson):
+    # #17: RHOC (density correction, G/CC, legitimately ~0) must not be range-masked.
+    raw = read_las(pearson_las_path, clean=False)
+    n_raw = int(np.isfinite(raw["RHOC"]).sum())
+    assert n_raw == 3767
+    assert int(np.isfinite(pearson["RHOC"]).sum()) == n_raw
+    assert "RHOC" not in pearson.mask_report
+    assert np.nanmin(pearson["RHOC"]) < 0.5  # real correction values, not a wiped curve
+
+
+def test_density_rule_is_name_and_unit_gated():
+    import lasio
+
+    from lasanalysis.load import rule_for
+
+    assert rule_for("RHOB", "G/CC") == ("density", 1.0)
+    assert rule_for("DEN", "kg/m3") == ("density", 1000.0)
+    assert rule_for("RHOC", "G/CC") == (None, 1.0)   # correction curve
+    assert rule_for("DRHO", "G/CC") == (None, 1.0)
+    assert rule_for("RILD", "OHM-M") == ("resistivity", 1.0)
+    assert rule_for("RILD", "ohm - m") == ("resistivity", 1.0)  # whitespace-insensitive
+    assert rule_for("CNPOR", "PU") == ("porosity_pu", 1.0)
+    assert rule_for("SPOR", "P U") == ("porosity_pu", 1.0)
+    assert rule_for("RHOB", "G/\tCC") == ("density", 1.0)     # tab in unit (gen-r1-005)
+    assert rule_for("GR", "GAPI") == (None, 1.0)
+    # no unit (CSV): the mnemonic decides
+    assert rule_for("RHOB", None) == ("density", 1.0)
+    assert rule_for("RHOC", None) == (None, 1.0)
+    assert rule_for("SPOR", None) == ("porosity_pu", 1.0)
+    assert rule_for("RILM", "") == ("resistivity", 1.0)
+
+    las = lasio.LASFile()
+    las.append_curve("DEPT", np.arange(4.0), unit="FT")
+    las.append_curve("RHOC", np.array([0.02, -0.05, 0.31, 0.10]), unit="G/CC")
+    las.append_curve("DEN", np.array([2450.0, 2650.0, 0.0, 9999.0]), unit="KG/M3")
+    las.append_curve("SPOR", np.array([10.0, 500.0, -999.0, 20.0]), unit="PU")
+    rep = clean_curves(las)
+    assert "RHOC" not in rep
+    assert rep["DEN"] == {"density": 2}          # 0 and 9999 kg/m3 masked, 2450/2650 kept
+    assert rep["SPOR"] == {"extra_null": 1, "porosity": 1}
+    np.testing.assert_array_equal(las["RHOC"], [0.02, -0.05, 0.31, 0.10])
+    assert np.isnan(las["DEN"][2]) and np.isnan(las["DEN"][3]) and las["DEN"][0] == 2450.0
+
+
 def test_depth_curve_is_never_touched(pearson_las_path):
     raw = read_las(pearson_las_path, clean=False)
     cleaned = read_las(pearson_las_path)
@@ -75,13 +119,17 @@ def test_clean_frame_uses_names_when_there_are_no_units():
             "NAME": ["a", "b", "c"],
         }
     )
+    df["RHOC"] = [0.01, 0.2, -0.1]
+    df["SPOR"] = [10.0, 300.0, 5.0]
     out, rep = clean_frame(df)
     assert rep == {
         "RILD": {"extra_null": 1, "off_scale": 1},
         "cnpor": {"porosity": 1},
         "RHOB": {"density": 1},
         "GR": {"extra_null": 1},
+        "SPOR": {"porosity": 1},
     }
+    assert out["RHOC"].tolist() == [0.01, 0.2, -0.1]
     assert out["GR"].iloc[0] == 1e5
     assert df["RILD"].iloc[1] == 1e5  # input untouched
     assert out["Depth"].tolist() == [1.0, 2.0, 3.0]

@@ -33,7 +33,15 @@ class Stub(BaseHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         Stub.hits.append((self.command, u.path, q))
         if u.path.endswith("las.lasd5.SelectWells"):
+            if q.get("f_t") == "35":
+                return 200, "text/html", b"<html><body>Service temporarily unavailable</body></html>"
             return 200, "text/html", (SEARCH_HTML if q.get("f_t") == "13" else EMPTY_HTML).encode()
+        if u.path == "/blob/kcc_logs_2017/4242.las":
+            # simulate a transient network failure on this candidate year: drop the connection
+            self.close_connection = True
+            raise ConnectionAbortedError("simulated")
+        if u.path == "/blob/kcc_logs_2016/4242.las":
+            return 200, "text/plain", TINY_LAS
         if u.path.endswith("las.lasd5.ViewLasHeader"):
             if q.get("f_kid") == "1046139243":
                 return 200, "text/html", HEADER_HTML.encode()
@@ -123,6 +131,37 @@ def test_search_wells(stub):
     assert kgs.search_wells(1, 1, "W", 36, base_url=base) == []
     with pytest.raises(ValueError):
         kgs.search_wells(base_url=base)  # empty query
+
+
+def test_search_wells_rejects_unexpected_page(stub):
+    # #20: neither marker present -> fail closed rather than parse whatever came back
+    with pytest.raises(kgs.KGSError, match="unexpected SelectWells response"):
+        kgs.search_wells(35, 1, "W", 1, base_url=stub["base_url"])
+
+
+def test_las_header_rejects_page_without_version_block():
+    # #20: an error page must not be mistaken for a LAS header
+    with pytest.raises(kgs.KGSError, match="no LAS header"):
+        kgs.las_header(1, base_url="unused", session=_FakeSession("<html>Kansas LAS files--No such file</html>"))
+
+
+def test_resolve_skips_a_candidate_year_that_errors(stub):
+    # #21: a dropped connection on 2017 must not abort; 2016 is served next
+    url = kgs.resolve_las_url(4242, years=[2017, 2016], **stub)
+    assert url.endswith("/blob/kcc_logs_2016/4242.las")
+
+
+def test_fetch_refuses_url_off_the_blob_host(stub, tmp_path):
+    # #18: a scraped las_url must stay on the expected scheme+host
+    evil = "http://169.254.169.254/latest/meta-data/x.las"
+    with pytest.raises(kgs.KGSError, match="refusing LAS URL"):
+        kgs.fetch_las(1046139243, tmp_path, url=evil, **stub)
+    assert not (tmp_path / "1046139243.las").exists()
+    with pytest.raises(kgs.KGSError):
+        kgs.check_las_url("https://kgsimages.blob.core.windows.net.evil.example/x.las")
+    with pytest.raises(kgs.KGSError):
+        kgs.check_las_url("http://kgsimages.blob.core.windows.net/x.las")  # scheme downgrade
+    assert kgs.check_las_url(kgs.las_url(1, 2016)) == kgs.las_url(1, 2016)
 
 
 def test_log_year_from_header():
