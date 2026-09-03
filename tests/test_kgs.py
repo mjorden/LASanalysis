@@ -20,6 +20,11 @@ SEARCH_HTML = (FIX / "selectwells_T13S_R22W_S35.html").read_text(encoding="utf-8
 EMPTY_HTML = (FIX / "selectwells_empty.html").read_text(encoding="utf-8")
 HEADER_HTML = (FIX / "viewlasheader_1046139243.html").read_text(encoding="utf-8")
 TINY_LAS = b"~Version Information\nVERS. 2.0\n~A DEPT GR\n0.0 10.0\n"
+PEARSON_WELL_HTML = (FIX / "displaywell_1046105344.html").read_text(encoding="utf-8")
+PBW_WELL_HTML = (FIX / "displaywell_1045079321.html").read_text(encoding="utf-8")
+# what KGS returns for a KID it does not know (or a LAS KID passed by mistake): every field blank
+EMPTY_WELL_HTML = "<html><body><table><tr><td>API:</td><td>KID:</td><td>Lease:</td><td>Well:</td></tr>" \
+                  "<tr><td>NAD83 Longitude:</td><td>NAD83 Latitude:</td><td>County:</td></tr></table></body></html>"
 
 
 class Stub(BaseHTTPRequestHandler):
@@ -42,6 +47,11 @@ class Stub(BaseHTTPRequestHandler):
             raise ConnectionAbortedError("simulated")
         if u.path == "/blob/kcc_logs_2016/4242.las":
             return 200, "text/plain", TINY_LAS
+        if u.path.endswith("qualified.well_page.DisplayWell"):
+            f = FIX / f"displaywell_{q.get('f_kid')}.html"
+            if f.exists():
+                return 200, "text/html", f.read_bytes()
+            return 200, "text/html", EMPTY_WELL_HTML.encode()
         if u.path.endswith("las.lasd5.ViewLasHeader"):
             if q.get("f_kid") == "1046139243":
                 return 200, "text/html", HEADER_HTML.encode()
@@ -214,6 +224,45 @@ def test_fetch_rejects_non_las_body(stub, tmp_path):
 def test_resolve_unknown_kid_gives_up_loudly(stub):
     with pytest.raises(kgs.KGSError, match="no LAS file found"):
         kgs.resolve_las_url(999, years=[2016, 2017], **stub)
+
+
+def test_parse_well_page():
+    w = kgs.parse_well_page(PEARSON_WELL_HTML)
+    assert w["well_kid"] == 1046105344 and w["api"].startswith("15-195-23011")
+    assert (w["lease"], w["well_no"], w["operator"], w["field"], w["county"]) == ("PEARSON FAMILY", "1-35", "Downing-Nelson Oil Co Inc", "Wildcat", "Trego")
+    assert w["lat"] == pytest.approx(38.880121) and w["lon"] == pytest.approx(-99.7321228)
+    assert w["lat_nad27"] == pytest.approx(38.8801099)
+    assert w["latlon_source"].startswith("calculated from footages")
+    assert (w["elevation"], w["elevation_datum"], w["total_depth"]) == (2395.0, "KB", 4350.0)
+    assert (w["well_type"], w["status"], w["spud_date"], w["completion_date"]) == ("D&A", "Plugged and Abandoned", "Nov-14-2016", "Nov-21-2016")
+    assert "producing_formation" not in w  # blank on a D&A well: must not swallow the next label
+    p = kgs.parse_well_page(PBW_WELL_HTML)
+    assert p["well_kid"] == 1045079321 and p["producing_formation"] == "ARBUCKLE" and p["latlon_source"] == "from GPS"
+    assert p["lat"] == pytest.approx(38.43746) and p["total_depth"] == 3845.0
+    assert kgs.parse_well_page(EMPTY_WELL_HTML) == {}
+
+
+def test_well_info_caches_and_rejects_empty(stub, tmp_path):
+    base = stub["base_url"]
+    Stub.hits.clear()
+    w = kgs.well_info(1046105344, base_url=base, cache_dir=tmp_path)
+    assert w["lat"] == pytest.approx(38.880121)
+    assert (tmp_path / "wells" / "1046105344.json").exists()
+    kgs.well_info(1046105344, base_url=base, cache_dir=tmp_path)  # served from cache
+    assert len([h for h in Stub.hits if "DisplayWell" in h[1]]) == 1
+    with pytest.raises(kgs.KGSError, match="empty"):
+        kgs.well_info(1046139243, base_url=base)  # a LAS KID, not a well KID
+
+
+def test_search_wells_with_coords_merges_well_pages(stub, tmp_path):
+    rows = kgs.search_wells(13, 22, "W", 35, base_url=stub["base_url"], with_coords=True, cache_dir=tmp_path)
+    pearson = next(r for r in rows if r["kid"] == 1046139243)
+    assert pearson["lat"] == pytest.approx(38.880121) and pearson["elevation"] == 2395.0 and pearson["status"] == "Plugged and Abandoned"
+    other = next(r for r in rows if r["kid"] == 1046427082)
+    assert "lat" not in other  # no fixture for well 1046140288 -> row left without coords, no abort
+    logs = []
+    kgs.add_well_info([{"well_kid": 999}], base_url=stub["base_url"], log=logs.append)
+    assert logs and "no header info" in logs[0]
 
 
 @pytest.mark.skipif(not os.environ.get("LASANALYSIS_NETWORK"), reason="set LASANALYSIS_NETWORK=1 to hit KGS")

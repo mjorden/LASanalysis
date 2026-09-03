@@ -161,21 +161,151 @@ def search_wells(
     base_url: str = CHASM_URL,
     session: Optional[requests.Session] = None,
     timeout: float = 60,
+    with_coords: bool = False,
+    cache_dir=None,
 ) -> List[dict]:
     """Search the KGS LAS index. Returns :func:`parse_search_html` rows.
 
     Township is 1-35 (all Kansas townships are south), range 1-43 W or 1-25 E,
     section 1-36. Text filters match a substring, case-insensitively, the way
     the web form does. All filters are optional but KGS refuses an empty query.
+    ``with_coords=True`` also fetches each well's page (#31) and merges
+    NAD83 ``lat`` / ``lon``, elevation, TD, status and dates into the rows.
     """
     params = search_params(township, range_, ew, section, lease, operator, county, api)
     if not any(v for k, v in params.items() if k != "f_st"):
         raise ValueError("give at least one search filter")
-    r = _session(session).get(f"{base_url}/las.lasd5.SelectWells", params=params, timeout=timeout)
+    s = _session(session)
+    r = s.get(f"{base_url}/las.lasd5.SelectWells", params=params, timeout=timeout)
     r.raise_for_status()
     if "Select location of well" not in r.text and "No wells found" not in r.text:
         raise KGSError("unexpected SelectWells response (KGS page layout may have changed)")
-    return parse_search_html(r.text)
+    rows = parse_search_html(r.text)
+    if with_coords:
+        add_well_info(rows, base_url=base_url, session=s, timeout=timeout, cache_dir=cache_dir)
+    return rows
+
+
+# --------------------------------------------------------------------------- well page (#31)
+
+_WELL_FIELDS = {
+    # label on the page -> key in the returned dict
+    "API": "api", "KID": "well_kid", "Lease": "lease", "Well": "well_no", "Original operator": "operator",
+    "Current operator": "current_operator", "Field": "field", "Location": "location",
+    "NAD27 Longitude": "lon_nad27", "NAD27 Latitude": "lat_nad27", "NAD83 Longitude": "lon", "NAD83 Latitude": "lat",
+    "County": "county", "Permit Date": "permit_date", "Spud Date": "spud_date", "Completion Date": "completion_date",
+    "Plugging Date": "plug_date", "Well Type": "well_type", "Status": "status", "Total Depth": "total_depth",
+    "Elevation": "elevation", "Producing Formation": "producing_formation",
+}
+_NUMERIC_WELL_FIELDS = ("lon", "lat", "lon_nad27", "lat_nad27", "total_depth")
+
+
+def parse_well_page(html: str) -> Dict[str, object]:
+    """Fields of a ``qualified.well_page.DisplayWell`` page.
+
+    Returns a dict with the keys in ``_WELL_FIELDS`` (missing ones absent),
+    numbers parsed for the coordinate and depth fields, ``elevation`` as a
+    number with ``elevation_datum`` (e.g. ``"KB"``) split off, and
+    ``latlon_source`` (KGS states whether it came from GPS or footages).
+    An empty template (unknown KID) yields an empty dict.
+    """
+    tokens = [t.strip() for t in re.split(r"<[^>]+>", html)]
+    tokens = [t for t in tokens if t]
+    out: Dict[str, object] = {}
+    for i, tok in enumerate(tokens):
+        label = tok.rstrip(":").strip()
+        if label in _WELL_FIELDS and tok.endswith(":") and i + 1 < len(tokens):
+            val = tokens[i + 1]
+            if val.endswith(":"):
+                continue  # empty field: the next token is another label ("IP Oil (bbl):", ...)
+            out[_WELL_FIELDS[label]] = val
+    m = re.search(r"Lat-long\s+([^<|]+?)\s*(?:<|$)", html)
+    if m:
+        out["latlon_source"] = m.group(1).strip()
+    for k in _NUMERIC_WELL_FIELDS:
+        if k in out:
+            try:
+                out[k] = float(str(out[k]).replace(",", ""))
+            except ValueError:
+                del out[k]
+    if "elevation" in out:
+        em = re.match(r"\s*([-\d.,]+)\s*([A-Za-z]*)", str(out["elevation"]))
+        if em:
+            out["elevation"] = float(em.group(1).replace(",", ""))
+            out["elevation_datum"] = em.group(2).upper() or None
+        else:
+            del out["elevation"]
+    if "well_kid" in out:
+        try:
+            out["well_kid"] = int(str(out["well_kid"]))
+        except ValueError:
+            pass
+    if "location" in out and "lat" not in out and "lon" not in out and len(out) <= 1:
+        return {}
+    return out
+
+
+def well_info(
+    well_kid: int,
+    *,
+    base_url: str = CHASM_URL,
+    session: Optional[requests.Session] = None,
+    timeout: float = 60,
+    cache_dir: "os.PathLike | str | None" = None,
+) -> Dict[str, object]:
+    """Header data for a *well* KID (not a LAS KID) from the KGS well page, cached as JSON.
+
+    Raises ``KGSError`` when KGS returns its empty template for the KID.
+    """
+    import json
+
+    well_kid = int(well_kid)
+    cache = None if cache_dir is None else Path(cache_dir) / "wells" / f"{well_kid}.json"
+    if cache is not None and cache.exists():
+        return json.loads(cache.read_text(encoding="utf-8"))
+    r = _session(session).get(f"{base_url}/qualified.well_page.DisplayWell", params={"f_kid": well_kid}, timeout=timeout)
+    r.raise_for_status()
+    info = parse_well_page(r.text)
+    if not info.get("lat") and not info.get("api"):
+        raise KGSError(f"KGS well page for KID {well_kid} is empty (is this a LAS KID rather than a well KID?)")
+    info.setdefault("well_kid", well_kid)
+    if cache is not None:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(info, indent=1), encoding="utf-8")
+    return info
+
+
+#: Fields copied from :func:`well_info` onto a search row by :func:`add_well_info`.
+WELL_ROW_FIELDS = ("lat", "lon", "latlon_source", "elevation", "elevation_datum", "total_depth", "well_type", "status",
+                   "producing_formation", "spud_date", "completion_date", "county")
+
+
+def add_well_info(rows: List[dict], *, base_url: str = CHASM_URL, session=None, timeout: float = 60,
+                  cache_dir=None, log=None) -> List[dict]:
+    """Merge coordinates and header fields into search rows in place (one request per distinct well_kid).
+
+    A well page that fails leaves the row without those keys and, if ``log``
+    is given, reports why — the batch never aborts on a missing page.
+    """
+    s = _session(session)
+    seen: Dict[int, Optional[dict]] = {}
+    for row in rows:
+        wk = row.get("well_kid")
+        if wk is None:
+            continue
+        if wk not in seen:
+            try:
+                seen[wk] = well_info(wk, base_url=base_url, session=s, timeout=timeout, cache_dir=cache_dir)
+            except (requests.RequestException, KGSError) as e:
+                seen[wk] = None
+                if log:
+                    log(f"  well {wk}: no header info ({type(e).__name__}: {e})")
+        info = seen[wk]
+        if info:
+            for k in WELL_ROW_FIELDS:
+                if k in info:
+                    row[k] = info[k]
+    return rows
 
 
 # --------------------------------------------------------------------------- fetch

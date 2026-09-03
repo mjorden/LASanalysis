@@ -130,14 +130,21 @@ def test_run_well_without_plot(tmp_path):
 
 def test_run_search_chains_search_fetch_run_and_survives_failures(tmp_path):
     hits = [
-        {"kid": 1046139243, "well": "PEARSON FAMILY 1-35", "api": "15-195-23011", "las_url": "u1"},
-        {"kid": 999, "well": "BROKEN", "api": "x", "las_url": "u2"},
+        {"kid": 1046139243, "well": "PEARSON FAMILY 1-35", "api": "15-195-23011", "las_url": "u1", "well_kid": 1046105344},
+        {"kid": 999, "well": "BROKEN", "api": "x", "las_url": "u2", "well_kid": 1},
     ]
     calls = []
 
     def search(**kw):
         calls.append(("search", kw))
-        return hits
+        return [dict(h) for h in hits]  # fresh rows: add_well_info mutates in place
+
+    def well_info(rows, cache_dir=None, log=None):
+        calls.append(("well_info", [r["well_kid"] for r in rows]))
+        for r in rows:
+            if r["well_kid"] == 1046105344:
+                r.update({"lat": 38.880121, "lon": -99.7321228, "elevation": 2395.0, "status": "Plugged and Abandoned"})
+        return rows
 
     def fetch(kid, cache_dir, url=None):
         calls.append(("fetch", kid, url))
@@ -147,14 +154,35 @@ def test_run_search_chains_search_fetch_run_and_survives_failures(tmp_path):
 
     logs = []
     out = run_search({"township": 13, "range_": 22, "ew": "W", "section": 35}, tmp_path, "unused-cache",
-                     depth_range=(3400, 4200), search=search, fetch=fetch, log=logs.append, plot=False)
+                     depth_range=(3400, 4200), search=search, fetch=fetch, log=logs.append, plot=False, well_info=well_info)
     assert calls[0] == ("search", {"township": 13, "range_": 22, "ew": "W", "section": 35})
+    assert calls[1] == ("well_info", [1046105344, 1])
     assert ("fetch", 1046139243, "u1") in calls and ("fetch", 999, "u2") in calls
     assert list(out["kid"]) == [1046139243, 999]
     assert out.loc[0, "error"] == "" and out.loc[0, "well_name"] == "PEARSON FAMILY #1-35"
+    assert out.loc[0, "lat"] == pytest.approx(38.880121) and out.loc[0, "status"] == "Plugged and Abandoned"
+    assert np.isnan(out.loc[1, "lat"])
     assert out.loc[1, "error"].startswith("RuntimeError: no such file")
     assert (tmp_path / "summary.csv").exists()
+    assert (tmp_path / "wells.png").exists()  # #31: location map from the wells that have coordinates
     assert any("FAILED" in line for line in logs)
+
+    # coords=False skips the lookup and the map entirely
+    calls.clear()
+    out2 = run_search({"lease": "PEARSON"}, tmp_path / "nocoords", "unused-cache", search=search, fetch=fetch, log=logs.append,
+                      plot=False, coords=False, well_info=well_info)
+    assert not any(c[0] == "well_info" for c in calls) and "lat" not in out2.columns
+    assert not (tmp_path / "nocoords" / "wells.png").exists()
+
+
+def test_plot_wells(tmp_path):
+    from lasanalysis.multiwell import plot_wells
+
+    s = pd.DataFrame({"well": ["A", "B", "C"], "lat": [38.88, 38.44, np.nan], "lon": [-99.73, -99.23, np.nan], "pay_ft": [7.5, 120.5, 1.0]})
+    p = plot_wells(s, tmp_path / "m.png")
+    assert p.exists() and p.stat().st_size > 1000
+    with pytest.raises(ValueError):
+        plot_wells(s.iloc[2:], tmp_path / "n.png")
 
 
 def test_cli_local_files(tmp_path, capsys):

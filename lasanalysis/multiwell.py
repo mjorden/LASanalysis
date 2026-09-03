@@ -296,20 +296,28 @@ def run_search(
     search: Callable[..., List[dict]] = kgs.search_wells,
     fetch: Callable[..., Path] = kgs.fetch_las,
     log: Callable[[str], None] = print,
+    coords: bool = True,
+    well_info: Optional[Callable[..., List[dict]]] = None,
+    map_png: Optional[str] = "wells.png",
     **run_kwargs,
 ) -> pd.DataFrame:
     """Search KGS, fetch every LAS hit, run each, write ``summary.csv``.
 
-    A well that fails to download or parse gets a row with an ``error`` column
-    instead of aborting the batch.
+    With ``coords=True`` (default) each well's KGS page is read for NAD83
+    ``lat`` / ``lon`` and header fields (#31), which land in the summary, and a
+    ``wells.png`` location map is written when at least one well has
+    coordinates. A well that fails to download or parse gets a row with an
+    ``error`` column instead of aborting the batch.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     hits = search(**search_kwargs)
     log(f"{len(hits)} LAS files match {search_kwargs}")
+    if coords:
+        (well_info or kgs.add_well_info)(hits, cache_dir=cache_dir, log=log)
     rows = []
     for h in hits:
-        meta = {k: h.get(k) for k in ("kid", "well", "api", "operator", "location", "las_url")}
+        meta = {k: h.get(k) for k in ("kid", "well", "api", "operator", "location", "las_url", "well_kid", *kgs.WELL_ROW_FIELDS) if k in h}
         try:
             path = fetch(h["kid"], cache_dir, url=h.get("las_url"))
             log(f"  {h['kid']} {h.get('well', '')}: {path.name}")
@@ -321,7 +329,34 @@ def run_search(
         rows.append(row)
     summary = pd.DataFrame(rows)
     summary.to_csv(out_dir / "summary.csv", index=False)
+    if map_png and "lat" in summary and summary["lat"].notna().any():
+        plot_wells(summary, out_dir / map_png)
+        log(f"wrote {out_dir / map_png}")
     return summary
+
+
+def plot_wells(summary: pd.DataFrame, out_png, label: str = "well", color_by: Optional[str] = "pay_ft", dpi: int = 120):
+    """Simple location map of a batch: lon/lat scatter, labelled, optionally coloured by a summary column."""
+    matplotlib.use("Agg")
+    df = summary.dropna(subset=["lat", "lon"])
+    if df.empty:
+        raise ValueError("no wells with coordinates")
+    fig, ax = plt.subplots(figsize=(7, 6), dpi=dpi)
+    c = df[color_by] if color_by and color_by in df and df[color_by].notna().any() else None
+    sc = ax.scatter(df["lon"], df["lat"], c=c, cmap="viridis", s=45, edgecolor="k", linewidth=0.5, zorder=3)
+    if c is not None:
+        fig.colorbar(sc, ax=ax, label=color_by, shrink=0.8)
+    for _, r in df.iterrows():
+        ax.annotate(str(r.get(label, "") or r.get("kid", "")), (r["lon"], r["lat"]), xytext=(4, 4), textcoords="offset points", fontsize=7)
+    ax.set_xlabel("Longitude (NAD83)")
+    ax.set_ylabel("Latitude (NAD83)")
+    ax.set_aspect(1.0 / np.cos(np.deg2rad(df["lat"].mean())))
+    ax.grid(True, linewidth=0.3, alpha=0.6)
+    ax.set_title(f"{len(df)} wells")
+    fig.tight_layout()
+    fig.savefig(out_png)
+    plt.close(fig)
+    return Path(out_png)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -342,6 +377,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--param", action="append", default=[], metavar="KEY=VALUE", help=f"override any of {sorted(DEFAULT_PARAMS)}")
     ap.add_argument("--no-plot", action="store_true")
     ap.add_argument("--html", action="store_true", help="also write an interactive viewer per well")
+    ap.add_argument("--no-coords", action="store_true", help="skip the per-well KGS page lookup (lat/lon, TD, status) and the wells.png map")
     args = ap.parse_args(argv)
 
     try:
@@ -366,9 +402,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         }
         if not search_kwargs:
             ap.error("give KGS search filters or --las files")
-        summary = run_search(search_kwargs, args.out, args.cache, params, depth, plot=not args.no_plot, html=args.html)
+        summary = run_search(search_kwargs, args.out, args.cache, params, depth, plot=not args.no_plot, html=args.html, coords=not args.no_coords)
 
-    cols = [c for c in ("kid", "well", "api", "depth_top", "depth_base", "phind_mean", "sw_mean", "pay_ft", "rw_envelope", "rw_rwa", "error") if c in summary]
+    cols = [c for c in ("kid", "well", "api", "lat", "lon", "depth_top", "depth_base", "phind_mean", "sw_mean", "pay_ft", "rw_envelope", "rw_rwa", "error") if c in summary]
     with pd.option_context("display.width", 200, "display.max_columns", 20):
         print(summary[cols].to_string(index=False))
     print(f"wrote {Path(args.out) / 'summary.csv'}")

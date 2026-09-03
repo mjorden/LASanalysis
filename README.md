@@ -152,7 +152,12 @@ path = kgs.fetch_las(1046139243, dest_dir="data/cache")   # cached; returns the 
 
 `search_wells` wraps the KGS index search (township 1–35 S, range 1–43 W or
 1–25 E, section 1–36, plus lease / operator / county / API filters) and
-returns one dict per LAS file with its download URL. `fetch_las` resolves a
+returns one dict per LAS file with its download URL. With
+`with_coords=True` it also reads each well's KGS page (`kgs.well_info`) for
+NAD83 `lat` / `lon` (and KGS's note on whether they came from GPS or were
+computed from footages), KB elevation, total depth, status, producing
+formation and dates; `multiwell` does this by default and writes a
+`wells.png` location map next to `summary.csv` (`--no-coords` to skip). `fetch_las` resolves a
 KID to its URL (pass `url=` from a search row to skip that; otherwise it reads
 the header page for the log year and probes the per-year folders KGS files
 under) and streams it to disk, refusing anything that does not start like a
