@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from .petro import MATRIX_DENSITY, archie_sw_lines
+from .petro import archie_sw_lines, matrix_density
 
 _DEFAULT_COLORS = ("tab:green", "tab:blue", "tab:red", "tab:orange", "tab:purple", "tab:brown")
 
@@ -156,7 +156,7 @@ def crossplot_neutron_density(
     if color_by is not None:
         ax.figure.colorbar(sc, ax=ax, label=getattr(color_by, "name", None) or "")
     for name in matrices:
-        rho_ma = MATRIX_DENSITY[name]
+        rho_ma = matrix_density(name)
         ax.plot([0, 100], [rho_ma, rho_fluid], linewidth=0.8, label=f"{name} ({rho_ma:.2f})")
     ax.set_xlim(-5, 60)
     ax.set_ylim(3.0, 1.8)

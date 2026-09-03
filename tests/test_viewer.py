@@ -70,7 +70,16 @@ def test_minimal_frame_gets_minimal_tracks():
     assert [t["curves"] for t in d["tracks"]] == [["GR"], ["VSH"]]
     assert d["title"] == "Log viewer"
     empty = pd.DataFrame({"ABHV": [1.0]}, index=pd.Index([1.0], name="DEPT"))
-    assert viewer_data(empty)["tracks"] == []
+    with pytest.raises(ValueError, match="no recognised curves"):  # #23: never a silent blank page
+        viewer_data(empty)
+
+
+def test_plotlyjs_is_attribute_escaped():
+    # #24
+    df = pd.DataFrame({"GR": [10.0, 20.0]}, index=pd.Index([1.0, 2.0], name="DEPT"))
+    html = build_viewer_html(df, plotlyjs='x.js"></script><script>alert(1)</script>')
+    assert '<script src="x.js&quot;&gt;&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;"></script>' in html
+    assert "<script>alert(1)</script>" not in html
 
 
 def test_write_viewer_from_las_and_cli(tmp_path):

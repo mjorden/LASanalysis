@@ -129,3 +129,19 @@ def test_cli_local_files(tmp_path, capsys):
         multiwell.main(["--out", str(tmp_path)])  # no source
     with pytest.raises(SystemExit):
         multiwell.main(["--las", str(PEARSON), "--out", str(tmp_path), "--param", "bogus=1"])
+    with pytest.raises(SystemExit):  # #22: unknown matrix is rejected at parse time
+        multiwell.main(["--las", str(PEARSON), "--out", str(tmp_path), "--param", "matrix=chalk"])
+
+
+def test_parse_params():
+    from lasanalysis.multiwell import parse_params
+
+    assert parse_params(["rw=0.04", "matrix=Dolomite", "m=2.2"]) == {"rw": 0.04, "matrix": "dolomite", "m": 2.2}
+    assert parse_params(["matrix=2.68"]) == {"matrix": 2.68}
+    assert parse_params([]) == {}
+    with pytest.raises(ValueError, match="unknown matrix 'chalk'"):
+        parse_params(["matrix=chalk"])
+    with pytest.raises(ValueError, match="must be a number"):
+        parse_params(["rw=abc"])
+    with pytest.raises(ValueError, match="unknown param"):
+        parse_params(["rw"])

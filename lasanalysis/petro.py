@@ -22,6 +22,19 @@ MATRIX_DENSITY: Dict[str, float] = {
 }
 
 
+def matrix_density(matrix) -> float:
+    """Grain density in g/cc from a :data:`MATRIX_DENSITY` key or a number.
+
+    Raises ``ValueError`` naming the valid keys for an unknown name.
+    """
+    if isinstance(matrix, str):
+        key = matrix.strip().lower()
+        if key not in MATRIX_DENSITY:
+            raise ValueError(f"unknown matrix {matrix!r}; choose one of {sorted(MATRIX_DENSITY)} or give a density in g/cc")
+        return MATRIX_DENSITY[key]
+    return float(matrix)
+
+
 def _arr(x) -> np.ndarray:
     return np.asarray(x, dtype=float)
 
@@ -70,8 +83,7 @@ def density_porosity(rhob, rho_matrix: float = 2.65, rho_fluid: float = 1.0) -> 
     Negative values (RHOB above the matrix density) are returned as-is so the
     caller can see them; clip if you need a physical porosity.
     """
-    if isinstance(rho_matrix, str):
-        rho_matrix = MATRIX_DENSITY[rho_matrix]
+    rho_matrix = matrix_density(rho_matrix)
     if rho_matrix <= rho_fluid:
         raise ValueError("rho_matrix must exceed rho_fluid")
     return (rho_matrix - _arr(rhob)) / (rho_matrix - rho_fluid)

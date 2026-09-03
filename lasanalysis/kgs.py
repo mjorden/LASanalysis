@@ -22,6 +22,7 @@ import re
 import tempfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -208,6 +209,18 @@ def las_url(kid: int, year: int, *, blob_url: str = BLOB_URL) -> str:
     return f"{blob_url}/kcc_logs_{int(year)}/{int(kid)}.las"
 
 
+def check_las_url(url: str, blob_url: str = BLOB_URL) -> str:
+    """Refuse a download URL that does not live on the expected blob host.
+
+    ``las_url`` values come out of KGS's HTML by regex; they must never become
+    an arbitrary request target. Scheme and host must match ``blob_url``.
+    """
+    want, got = urlparse(blob_url), urlparse(str(url))
+    if got.scheme != want.scheme or got.netloc != want.netloc:
+        raise KGSError(f"refusing LAS URL {url!r}: expected {want.scheme}://{want.netloc}/...")
+    return url
+
+
 def resolve_las_url(
     kid: int,
     *,
@@ -242,7 +255,10 @@ def resolve_las_url(
     for y in years:
         url = las_url(kid, y, blob_url=blob_url)
         tried.append(url)
-        r = s.head(url, timeout=timeout, allow_redirects=True)
+        try:
+            r = s.head(url, timeout=timeout, allow_redirects=True)
+        except requests.RequestException:
+            continue  # transient failure on one candidate year; try the next
         if r.status_code == 200:
             return url
     raise KGSError(f"no LAS file found for KID {kid}; tried {len(tried)} URLs, first {tried[0]}")
@@ -273,6 +289,8 @@ def fetch_las(
     s = _session(session)
     if url is None:
         url = resolve_las_url(kid, base_url=base_url, blob_url=blob_url, session=s, timeout=timeout)
+    else:
+        check_las_url(url, blob_url)
     dest_dir.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f"{kid}.", suffix=".part", dir=dest_dir)
     try:

@@ -16,6 +16,7 @@ small; pass a local path or another URL to change that.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import math
 import sys
@@ -26,7 +27,7 @@ import pandas as pd
 
 from .load import curves, read_las, standardize
 from .multiwell import DEFAULT_PARAMS, default_tracks
-from .petro import MATRIX_DENSITY
+from .petro import MATRIX_DENSITY, matrix_density
 
 PLOTLY_CDN = "https://cdnjs.cloudflare.com/ajax/libs/plotly.js/3.1.0/plotly.min.js"
 
@@ -74,10 +75,14 @@ def viewer_data(df: pd.DataFrame, meta: Optional[dict] = None, params: Optional[
     if "RT" in present and ("RHOB" in present or "NPHI" in present):
         derived_present.append("SW")
     tracks = default_tracks(present + derived_present)
+    if not tracks:
+        raise ValueError(
+            "no recognised curves to display; need at least one of " + ", ".join(STANDARD_CURVES) + f" (columns: {list(df.columns)})"
+        )
     depth = df.index.to_numpy(dtype=float)
     top, base = (float(depth.min()), float(depth.max())) if depth_range is None else (float(depth_range[0]), float(depth_range[1]))
     matrix = p["matrix"]
-    rho_ma = MATRIX_DENSITY[matrix] if isinstance(matrix, str) else float(matrix)
+    rho_ma = matrix_density(matrix)
     return {
         "title": title or (meta or {}).get("well") or "Log viewer",
         "meta": meta or {},
@@ -104,7 +109,7 @@ def build_viewer_html(df: pd.DataFrame, meta: Optional[dict] = None, params: Opt
     blob = json.dumps(data, allow_nan=False, separators=(",", ":")).replace("</", "<\\/")
     return (
         _TEMPLATE.replace("__TITLE__", _esc(data["title"]))
-        .replace("__PLOTLY__", plotlyjs)
+        .replace("__PLOTLY__", html.escape(str(plotlyjs), quote=True))  # attribute context
         .replace("__DATA__", blob)
     )
 
@@ -137,12 +142,12 @@ def main(argv=None) -> int:
     ap.add_argument("--param", action="append", default=[], metavar="KEY=VALUE", help=f"override any of {sorted(DEFAULT_PARAMS)}")
     ap.add_argument("--plotlyjs", default=PLOTLY_CDN, help="URL or path of plotly.min.js")
     args = ap.parse_args(argv)
-    params = {}
-    for kv in args.param:
-        k, _, v = kv.partition("=")
-        if k not in DEFAULT_PARAMS:
-            ap.error(f"unknown param {k!r}")
-        params[k] = v if k == "matrix" else float(v)
+    from .multiwell import parse_params
+
+    try:
+        params = parse_params(args.param)
+    except ValueError as e:
+        ap.error(str(e))
     out = write_viewer(args.las, args.out, params, tuple(args.depth) if args.depth else None, plotlyjs=args.plotlyjs)
     print(f"wrote {out}")
     return 0
