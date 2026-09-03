@@ -27,7 +27,7 @@ import pandas as pd
 
 from .load import curves, read_las, standardize
 from .multiwell import DEFAULT_PARAMS, default_tracks
-from .petro import MATRIX_DENSITY, matrix_density
+from .petro import MATRIX_DENSITY, NEUTRON_MATRIX_OFFSET, SW_MODELS, matrix_density
 
 PLOTLY_CDN = "https://cdnjs.cloudflare.com/ajax/libs/plotly.js/3.1.0/plotly.min.js"
 
@@ -94,10 +94,15 @@ def viewer_data(df: pd.DataFrame, meta: Optional[dict] = None, params: Optional[
         "params": {
             "gr_clean": float(p["gr_clean"]), "gr_dirty": float(p["gr_dirty"]),
             "matrix": matrix if isinstance(matrix, str) else "custom", "rho_ma": rho_ma, "rho_fluid": float(p["rho_fluid"]),
+            "neutron_matrix": str(p["neutron_matrix"]).lower(),
+            "sw_model": str(p["sw_model"]).lower(),
+            "rsh": None if p["rsh"] is None or not math.isfinite(float(p["rsh"])) else float(p["rsh"]),
             "rw": float(p["rw"]), "a": float(p["a"]), "m": float(p["m"]), "n": float(p["n"]),
             "phi_cut": float(p["phi_cut"]), "vsh_cut": float(p["vsh_cut"]), "sw_cut": float(p["sw_cut"]),
         },
         "matrices": MATRIX_DENSITY,
+        "neutron_offsets": NEUTRON_MATRIX_OFFSET,
+        "sw_models": list(SW_MODELS),
     }
 
 
@@ -205,8 +210,13 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <div class="row"><label>Matrix</label><select id="matrix"></select></div>
   <div class="row"><label>&rho;<sub>ma</sub> g/cc</label><input type="number" id="rho_ma" step="0.01"></div>
   <div class="row"><label>&rho;<sub>fluid</sub> g/cc</label><input type="number" id="rho_fluid" step="0.05"></div>
+  <div class="row"><label>Neutron scale</label><select id="neutron_matrix"></select></div>
+  <p class="fine" id="neutron_note"></p>
 
-  <h2>Archie</h2>
+  <h2>Water saturation</h2>
+  <div class="row"><label>Model</label><select id="sw_model"></select></div>
+  <div class="row"><label>Rsh &Omega;m</label><input type="number" id="rsh" step="0.1" min="0.01" placeholder="auto"></div>
+  <p class="fine" id="rsh_note"></p>
   <div class="row"><label>Rw &Omega;m</label><input type="number" id="rw" step="0.005" min="0.001"><input type="range" id="rw_s" min="-2.3" max="0" step="0.01"></div>
   <div class="row"><label>a</label><input type="number" id="a" step="0.05"><input type="range" id="a_s" min="0.5" max="1.5" step="0.01"></div>
   <div class="row"><label>m</label><input type="number" id="m" step="0.05"><input type="range" id="m_s" min="1.3" max="3" step="0.01"></div>
@@ -246,17 +256,46 @@ function derive(p) {
     const gr = C.GR ? C.GR[i] : null; let vsh=null;
     if (gr!=null && p.gr_dirty>p.gr_clean) { let igr=(gr-p.gr_clean)/(p.gr_dirty-p.gr_clean); igr=Math.min(1,Math.max(0,igr)); vsh=Math.min(1,0.33*(Math.pow(2,2*igr)-1)); }
     const rhob = C.RHOB ? C.RHOB[i] : null; const phid = (rhob!=null && p.rho_ma>p.rho_fluid) ? (p.rho_ma-rhob)/(p.rho_ma-p.rho_fluid) : null;
-    const nphi = C.NPHI ? C.NPHI[i] : null; const phin = nphi!=null ? nphi/100 : null;
+    const nphi = C.NPHI ? C.NPHI[i] : null; let phin = nphi!=null ? nphi/100 : null;
+    // #26: neutron is scaled on the logging matrix; shift it onto the density matrix when both are chart lithologies
+    if (phin!=null && (p.neutron_matrix in D.neutron_offsets) && (p.matrix in D.neutron_offsets)) phin += D.neutron_offsets[p.matrix] - D.neutron_offsets[p.neutron_matrix];
     const phind = (phid!=null && phin!=null) ? (phid+phin)/2 : null;
     const phi = phind!=null ? phind : phid;
     const rt = C.RT ? C.RT[i] : null; let sw=null;
-    if (phi!=null && rt!=null && phi>0 && rt>0) sw = Math.min(1, Math.pow(p.a*p.rw/(Math.pow(phi,p.m)*rt), 1/p.n));
+    if (phi!=null && rt!=null && phi>0 && rt>0) sw = Math.min(1, swModel(p, rt, phi, vsh));
     const pay = phi!=null && sw!=null && vsh!=null && phi>p.phi_cut && vsh<p.vsh_cut && sw<p.sw_cut;
     VSH.push(vsh); PHID.push(phid); PHIN.push(phin); PHIND.push(phind); SW.push(sw); PAY.push(pay);
   }
   return {VSH, PHID, PHIN, PHIND, SW, PAY};
 }
 function series(name) { return C[name] || derived[name]; }
+
+// #28: Sw models mirroring petro.py. Archie when no Vsh is available.
+function archie(p, rt, phi) { return Math.pow(p.a*p.rw/(Math.pow(phi,p.m)*rt), 1/p.n); }
+function rshEff(p) { return (p.rsh!=null && p.rsh>0) ? p.rsh : P.rsh_auto; }
+function swModel(p, rt, phi, vsh) {
+  const model = p.sw_model, rsh = rshEff(p);
+  if (model==="archie" || vsh==null || !(rsh>0)) return archie(p, rt, phi);
+  const v = Math.min(1, Math.max(0, vsh));
+  if (model==="indonesia") {
+    const term = Math.pow(v, 1 - v/2)/Math.sqrt(rsh) + Math.pow(phi, p.m/2)/Math.sqrt(p.a*p.rw);
+    return Math.pow((1/Math.sqrt(rt))/term, 2/p.n);
+  }
+  // modified Simandoux: c*Sw^n + d*Sw = 1/Rt
+  const c = Math.pow(phi, p.m)/(p.a*p.rw), d = v/rsh;
+  if (p.n===2) return (Math.sqrt(d*d + 4*c/rt) - d)/(2*c);
+  let sw = Math.min(archie(p, rt, phi), 1) || 1;
+  for (let k=0;k<30;k++) { const f = c*Math.pow(sw,p.n) + d*sw - 1/rt, fp = p.n*c*Math.pow(sw,p.n-1) + d; sw = Math.min(10, Math.max(1e-6, sw - f/fp)); }
+  return sw;
+}
+function pickRshAuto() {
+  // median Rt where Vsh >= 0.8 (petro.pick_rsh defaults); null when there is no shale
+  const d0 = derive(Object.assign({}, P, {sw_model:"archie"}));
+  const vals = [];
+  for (let i=0;i<N;i++) { const v = d0.VSH[i], rt = C.RT ? C.RT[i] : null; if (v!=null && rt!=null && rt>0 && v>=0.8) vals.push(rt); }
+  if (vals.length < 10) return null;
+  vals.sort((a,b)=>a-b); return vals[Math.floor(vals.length/2)];
+}
 
 function buildLogs() {
   derived = derive(P);
@@ -345,7 +384,7 @@ function pickett() {
   const phis = []; for (let e=-2;e<=0.0001;e+=0.05) phis.push(Math.pow(10,e));
   [1,0.5,0.25,0.1].forEach(sw => traces.push({x:phis, y:phis.map(f=>P.a*P.rw/(Math.pow(f,P.m)*Math.pow(sw,P.n))), mode:"lines", line:{width:1}, name:"Sw="+sw, hoverinfo:"name"}));
   Plotly.react("pickett", traces, {margin:{l:50,r:10,t:26,b:36}, paper_bgcolor:"#fff", plot_bgcolor:"#fff", font:{family:"Georgia, serif", size:11},
-    title:{text:`Pickett (Rw=${P.rw.toFixed(3)}, a=${P.a}, m=${P.m}, n=${P.n})`, font:{size:12}}, showlegend:true, legend:{font:{size:9}, x:1.02},
+    title:{text:`Pickett (Rw=${P.rw.toFixed(3)}, a=${P.a}, m=${P.m}, n=${P.n}; Sw track: ${P.sw_model})`, font:{size:12}}, showlegend:true, legend:{font:{size:9}, x:1.02},
     xaxis:{type:"log", range:[-2,0], title:{text:"phi (N-D avg or density)"}, gridcolor:"#eee"}, yaxis:{type:"log", range:[-0.5,3], title:{text:"Rt"}, gridcolor:"#eee"}},
     {responsive:true, displaylogo:false});
 }
@@ -362,14 +401,33 @@ function fillControls() {
   Object.entries(D.matrices).forEach(([k,v]) => { const o=document.createElement("option"); o.value=k; o.textContent=`${k} (${v})`; sel.appendChild(o); });
   const o=document.createElement("option"); o.value="custom"; o.textContent="custom"; sel.appendChild(o);
   sel.value = P.matrix in D.matrices ? P.matrix : "custom";
+  const nsel = document.getElementById("neutron_matrix"); nsel.innerHTML = "";
+  Object.keys(D.neutron_offsets).forEach(k => { const o=document.createElement("option"); o.value=k; o.textContent=k; nsel.appendChild(o); });
+  nsel.value = P.neutron_matrix in D.neutron_offsets ? P.neutron_matrix : "limestone";
+  const msel = document.getElementById("sw_model"); msel.innerHTML = "";
+  D.sw_models.forEach(k => { const o=document.createElement("option"); o.value=k; o.textContent=k; msel.appendChild(o); });
+  msel.value = P.sw_model;
+  document.getElementById("rsh").value = (P.rsh!=null && P.rsh>0) ? P.rsh : "";
+  notes();
+}
+function notes() {
+  const nn = document.getElementById("neutron_note");
+  nn.textContent = (P.matrix in D.neutron_offsets) ? `Neutron shifted ${((D.neutron_offsets[P.matrix]-D.neutron_offsets[P.neutron_matrix])*100).toFixed(0)} pu from the ${P.neutron_matrix} scale to ${P.matrix}.`
+                                                   : `No neutron lithology correction for matrix "${P.matrix}" — neutron left on the ${P.neutron_matrix} scale.`;
+  const rn = document.getElementById("rsh_note");
+  if (P.sw_model==="archie") rn.textContent = "Archie ignores shale conductivity; pay flag relies on the Vsh cutoff.";
+  else rn.textContent = (P.rsh!=null && P.rsh>0) ? `${P.sw_model} with Rsh = ${P.rsh}` : (P.rsh_auto ? `${P.sw_model}; Rsh auto-picked as ${P.rsh_auto.toFixed(2)} Ωm (median Rt where Vsh ≥ 0.8)` : `${P.sw_model} needs Rsh — no shale in this log to pick it from; Archie used`);
 }
 function wire() {
   NUM.forEach(k => document.getElementById(k).addEventListener("input", e => { const v=+e.target.value; if (!isFinite(v)) return; P[k]=v;
-    if (k==="rho_ma") document.getElementById("matrix").value="custom";
+    if (k==="rho_ma") { document.getElementById("matrix").value="custom"; P.matrix="custom"; notes(); }
     if (k==="rw") document.getElementById("rw_s").value=Math.log10(v); if (["a","m","n"].includes(k)) document.getElementById(k+"_s").value=v; update(); }));
   ["a","m","n"].forEach(k => document.getElementById(k+"_s").addEventListener("input", e => { P[k]=+e.target.value; document.getElementById(k).value=P[k].toFixed(2); update(); }));
   document.getElementById("rw_s").addEventListener("input", e => { P.rw=Math.pow(10,+e.target.value); document.getElementById("rw").value=P.rw.toFixed(3); update(); });
-  document.getElementById("matrix").addEventListener("change", e => { const k=e.target.value; if (k in D.matrices) { P.rho_ma=D.matrices[k]; document.getElementById("rho_ma").value=P.rho_ma; update(); } });
+  document.getElementById("matrix").addEventListener("change", e => { const k=e.target.value; P.matrix=k; if (k in D.matrices) { P.rho_ma=D.matrices[k]; document.getElementById("rho_ma").value=P.rho_ma; } notes(); update(); });
+  document.getElementById("neutron_matrix").addEventListener("change", e => { P.neutron_matrix=e.target.value; notes(); update(); });
+  document.getElementById("sw_model").addEventListener("change", e => { P.sw_model=e.target.value; notes(); update(); });
+  document.getElementById("rsh").addEventListener("input", e => { const v=+e.target.value; P.rsh = (isFinite(v) && v>0) ? v : null; notes(); update(); });
   document.getElementById("top").addEventListener("change", applyDepth);
   document.getElementById("base").addEventListener("change", applyDepth);
   document.getElementById("fullrange").addEventListener("click", () => { setDepthInputs(D.full_range[0], D.full_range[1]); applyDepth(); });
@@ -379,6 +437,7 @@ function wire() {
 document.getElementById("title").textContent = D.title;
 document.getElementById("meta").textContent = Object.entries(D.meta).filter(([k])=>k!=="well").map(([k,v])=>`${k}: ${v}`).join("  ·  ");
 setDepthInputs(D.depth_range[0], D.depth_range[1]);
+P.rsh_auto = pickRshAuto(); P0.rsh_auto = P.rsh_auto;
 fillControls(); wire(); buildLogs(); pickett(); stats();
 </script>
 </body>

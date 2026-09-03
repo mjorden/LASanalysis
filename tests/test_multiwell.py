@@ -38,6 +38,43 @@ def test_analyze_adds_what_the_curves_allow():
     assert "SW" in only_density  # falls back to PHID when there is no neutron
 
 
+def test_analyze_neutron_matrix_correction_and_sw_models():
+    import warnings
+
+    base = _frame(GR=65.0, RHOB=2.55, NPHI=10.0, RT=20.0)
+    lime = analyze(base)  # default: neutron and density both limestone -> no shift
+    assert lime["PHIN"].iloc[0] == pytest.approx(0.10) and lime.attrs["phin_corrected"] is True
+    ss = analyze(base, {"matrix": "sandstone"})
+    assert ss["PHIN"].iloc[0] == pytest.approx(0.14)  # limestone-scaled neutron -> sandstone
+    assert ss["PHID"].iloc[0] == pytest.approx((2.65 - 2.55) / 1.65)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        salt = analyze(base, {"matrix": "salt"})
+    assert salt["PHIN"].iloc[0] == pytest.approx(0.10) and salt.attrs["phin_corrected"] is False
+    assert any("no lithology correction" in str(x.message) for x in w)
+
+    # shaly-sand model with an explicit Rsh
+    shaly = _frame(GR=90.0, RHOB=2.5, NPHI=15.0, RT=5.0)
+    sim = analyze(shaly, {"sw_model": "simandoux", "rsh": 3.0})
+    assert sim.attrs["sw_model"] == "simandoux" and sim.attrs["rsh"] == 3.0
+    assert "SW_ARCHIE" in sim and (sim["SW"] < sim["SW_ARCHIE"]).all()
+    # Rsh auto-pick needs shale samples; a clean frame falls back to Archie with a warning
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        clean = analyze(_frame(GR=30.0, RHOB=2.5, NPHI=15.0, RT=5.0), {"sw_model": "indonesia"})
+    assert clean.attrs["sw_model"] == "archie" and "SW_ARCHIE" not in clean
+    assert any("falling back to Archie" in str(x.message) for x in w)
+
+
+def test_summarize_reports_both_rw_picks(tmp_path):
+    row = run_well(PEARSON, tmp_path, depth_range=(3400, 4200), plot=False)
+    assert 0.02 < row["rw_envelope"] < 0.05 and 1.8 < row["m_envelope"] < 2.2
+    assert 0.01 < row["rw_rwa"] < 0.1
+    assert "-" in row["rwa_interval"]
+    assert row["sw_model"] == "archie" and row["phin_corrected"] is True
+    assert json.loads(row["params"])["sw_model"] == "archie" and json.loads(row["params"])["rsh"] is None
+
+
 def test_default_tracks_only_uses_present_curves():
     t = default_tracks(["GR", "RT", "RHOB", "VSH", "SW"])
     names = [c for tr in t for c in tr["curves"]]
@@ -86,7 +123,8 @@ def test_run_well_html(tmp_path):
 def test_run_well_without_plot(tmp_path):
     row = run_well(PEARSON, tmp_path, plot=False, params={"rw": 0.05, "matrix": "dolomite"})
     assert row["png"] == ""
-    assert json.loads(row["params"]) == {**{k: DEFAULT_PARAMS[k] for k in ("a", "m", "n", "gr_clean", "gr_dirty")}, "rw": 0.05, "matrix": "dolomite"}
+    got = json.loads(row["params"])
+    assert got["rw"] == 0.05 and got["matrix"] == "dolomite" and got["m"] == DEFAULT_PARAMS["m"] and got["rsh"] is None
     assert not (tmp_path / "1046139243.png").exists()
 
 
@@ -138,6 +176,11 @@ def test_parse_params():
 
     assert parse_params(["rw=0.04", "matrix=Dolomite", "m=2.2"]) == {"rw": 0.04, "matrix": "dolomite", "m": 2.2}
     assert parse_params(["matrix=2.68"]) == {"matrix": 2.68}
+    assert parse_params(["sw_model=Simandoux", "rsh=2.5", "neutron_matrix=sandstone"]) == {"sw_model": "simandoux", "rsh": 2.5, "neutron_matrix": "sandstone"}
+    with pytest.raises(ValueError, match="unknown Sw model"):
+        parse_params(["sw_model=waxman"])
+    with pytest.raises(ValueError, match="no neutron lithology correction"):
+        parse_params(["neutron_matrix=salt"])
     assert parse_params([]) == {}
     with pytest.raises(ValueError, match="unknown matrix 'chalk'"):
         parse_params(["matrix=chalk"])

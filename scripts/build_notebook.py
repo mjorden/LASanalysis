@@ -44,7 +44,7 @@ import matplotlib.pyplot as plt
 from lasanalysis import (
     read_las, curves, standardize, plot_tracks,
     vshale_linear, vshale_larionov, density_porosity, neutron_density_crossover,
-    archie_sw, fit_water_line, crossplot_neutron_density, pickett_plot, MATRIX_DENSITY,
+    archie_sw, fit_water_line, pick_rw_from_rwa, crossplot_neutron_density, pickett_plot, MATRIX_DENSITY,
 )
 from lasanalysis.petro import pu_to_frac, frac_to_pu
 
@@ -221,7 +221,31 @@ ax.set_xlim(0.02, 0.5); ax.set_ylim(0.5, 1000); ax.legend(fontsize=8)
 
 md(
     """
+A second, independent pick: the apparent water resistivity `Rwa = Rt·phi^m / a`
+equals Rw in water-bearing rock and exceeds it elsewhere, so a low percentile
+of Rwa over clean, porous samples is an Rw estimate that needs no straight
+Pickett line (it assumes `m` instead). The two should agree here; on a mixed
+section such as PBW #1-32 the envelope fit wanders and Rwa is the one to trust.
+"""
+)
+
+code(
+    """
+r = pick_rw_from_rwa(sel["RT"], sel["PHIND"], sel["VSH_LAR"], depth=sel.index, m=M, a=A)
+print(f"Rwa pick: Rw = {r['rw']:.3f} from {r['n_points']} clean samples; wettest interval {r['interval'][0]:.0f}-{r['interval'][1]:.0f} ft")
+print(f"envelope: Rw = {RW}, m = {M}")
+"""
+)
+
+md(
+    """
 ## 6. Archie water saturation
+
+Archie ignores shale conductivity, so it overstates Sw in shaly intervals; the
+pay flag later copes with a Vsh cutoff. `water_saturation(model, ...)` also
+offers modified Simandoux and Indonesia (Poupon–Leveaux), which need a shale
+resistivity (`pick_rsh` takes the median Rt of the shales). The viewer has the
+same switch.
 """
 )
 

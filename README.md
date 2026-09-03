@@ -95,7 +95,23 @@ phid = density_porosity(df["RHOB"], "limestone")        # or a number, g/cc
 sw   = archie_sw(df["RT"], phid, rw=0.05, a=1, m=2, n=2)
 ```
 
-`fit_water_line(rt, phi)` picks `Rw` and `m` from the log itself: it takes the
+**Neutron scale (#26).** A compensated-neutron curve is reported on the
+lithology the service company selected — `CNPOR` is limestone-scaled. Before
+averaging it with a density porosity computed on another matrix, `analyze`
+shifts it with `neutron_lithology_correction` (a first-order chart
+approximation: sandstone +4 pu, dolomite −6 pu relative to limestone, good to
+about ±2 pu). `neutron_matrix` is a parameter (default limestone); for
+matrices with no neutron scale (salt, anhydrite, a bare density) the curve is
+left as-is and a warning says so; `summary.csv` records `phin_corrected`.
+
+**Shaly-sand Sw (#28).** `sw_model` selects `archie` (default), `simandoux`
+(modified Simandoux, closed form at `n = 2`, Newton otherwise) or `indonesia`
+(Poupon–Leveaux). Both need a shale resistivity `rsh`; leave it unset and
+`pick_rsh` takes the median Rt where Vsh ≥ 0.8. With `Vsh = 0` both reduce
+exactly to Archie. When a shaly model is active the frame also carries
+`SW_ARCHIE` for comparison, and the viewer has the same selector.
+
+**Two Rw picks per well (#27).** `fit_water_line(rt, phi)` picks `Rw` and `m` from the log itself: it takes the
 low-Rt envelope of the clean points on a Pickett plot (5th percentile of Rt
 per porosity bin) and fits the Sw = 1 line, whose slope is `-m` and intercept
 `a·Rw`. For Pearson #1-35, neutron-density porosity with a 6 % cutoff gives
@@ -110,8 +126,17 @@ with the cut. The cleanest cut (Vsh < 0.10, φND ≥ 6 %) gives `m = 1.99`,
 `a·Rw = 0.063`, and the clean wet zones at 3250–3340 ft (φ ≈ 15–17 %, Rt
 1.7–2.8 ohm-m) give Rw 0.05–0.066 at `m = 2`, so PBW uses **Rw = 0.06,
 m = 2.0**. Each Pages viewer opens with its own well's picks
-(`scripts/build_site.py`); `multiwell.DEFAULT_PARAMS` still carries the
+(`lasanalysis/site.py`); `multiwell.DEFAULT_PARAMS` still carries the
 Pearson values, so pass `--param rw=…` for other wells.
+
+Because the envelope fit can fail that way, there is a second, independent
+pick: `pick_rw_from_rwa(rt, phi, vsh)` takes a low percentile of the apparent
+water resistivity `Rwa = Rt·φ^m / a` over clean, porous samples (the wettest
+clean rock has Rwa ≈ Rw) and reports the depth interval those samples came
+from. It needs no straight Pickett line, at the cost of assuming `m`.
+`multiwell` writes both — `rw_envelope` / `m_envelope` and `rw_rwa` /
+`rwa_interval` — into `summary.csv` so a disagreement between them is visible
+per well rather than hidden in a notebook.
 
 ### More wells from KGS
 
