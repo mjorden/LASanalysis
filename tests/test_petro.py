@@ -86,6 +86,28 @@ def test_archie_sw():
         archie_sw(20.0, 0.2, rw=0.0)
 
 
+def test_fit_water_line_recovers_m_and_rw():
+    from lasanalysis.petro import fit_water_line
+
+    rng = np.random.default_rng(1)
+    n = 4000
+    phi = 10 ** rng.uniform(np.log10(0.06), np.log10(0.35), n)
+    # true water line m=2, Rw=0.03; scatter points *above* it (Sw < 1) with a wet floor
+    sw = np.where(rng.uniform(size=n) < 0.3, 1.0, rng.uniform(0.2, 1.0, n))
+    rt = 0.03 / (phi**2 * sw**2) * 10 ** rng.normal(0, 0.02, n)
+    fit = fit_water_line(rt, phi, q=5)
+    assert fit["m"] == pytest.approx(2.0, abs=0.1)
+    assert fit["rw"] == pytest.approx(0.03, rel=0.15)
+    assert fit["n_points"] == n
+    assert fit["envelope"].shape[1] == 3 and len(fit["envelope"]) >= 3
+    # NaN / non-positive / out-of-range inputs are ignored, not fatal
+    rt2 = np.concatenate([rt, [np.nan, -1, 5, 5]])
+    phi2 = np.concatenate([phi, [0.1, 0.1, 0.01, 0.9]])
+    assert fit_water_line(rt2, phi2)["n_points"] == n
+    with pytest.raises(ValueError, match="bins"):
+        fit_water_line(rt[:20], phi[:20])
+
+
 def test_archie_sw_lines_are_consistent_with_archie_sw():
     phi = np.array([0.05, 0.1, 0.3])
     lines = archie_sw_lines(phi, rw=0.05, sw_values=(1.0, 0.5))

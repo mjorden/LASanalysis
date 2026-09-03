@@ -44,7 +44,7 @@ import matplotlib.pyplot as plt
 from lasanalysis import (
     read_las, curves, standardize, plot_tracks,
     vshale_linear, vshale_larionov, density_porosity, neutron_density_crossover,
-    archie_sw, crossplot_neutron_density, pickett_plot, MATRIX_DENSITY,
+    archie_sw, fit_water_line, crossplot_neutron_density, pickett_plot, MATRIX_DENSITY,
 )
 from lasanalysis.petro import pu_to_frac, frac_to_pu
 
@@ -161,27 +161,73 @@ ax.set_title("Neutron-density crossplot, coloured by GR")
 
 md(
     """
-## 5. Archie water saturation
+## 5. Picking Rw and m from the Pickett plot
 
-`Rw` is not known for this well; the Pickett plot lets you pick it: water-bearing
-points fall on the Sw = 1 line, whose intercept at phi = 1 is `a * Rw` and whose
-slope is `-m`. Adjust `RW`, `M`, `N` until the wet limestone plots on the line,
-then the Sw track is meaningful. The values below are a placeholder.
+No water analysis is available for this well, so `Rw` and the cementation
+exponent `m` come from the log itself. On a Pickett plot (log Rt vs log phi)
+water-bearing rock falls on a straight line with slope `-m` and intercept
+`a * Rw` at phi = 1; everything hydrocarbon-bearing plots above it.
+`fit_water_line` takes the low-Rt envelope of the clean points (5th percentile
+of Rt in each porosity bin) and fits that line.
+
+Two choices matter and are shown below:
+
+* **porosity source** — density porosity alone vs the neutron-density average
+  (`PHIND`), the usual choice in carbonates;
+* **low-porosity cutoff** — below ~6 % porosity, shale conductivity and matrix
+  error flatten the envelope and drag the apparent `m` toward 1.3.
 """
 )
 
 code(
     """
-RW, A, M, N = 0.05, 1.0, 2.0, 2.0
+df["PHIND"] = (df["PHID"] + df["PHIN"]) / 2
 
 sel = df.loc[DEPTH_RANGE[0]:DEPTH_RANGE[1]]
-ax = pickett_plot(sel["RT"], sel["PHID"], rw=RW, a=A, m=M, n=N, color_by=sel["GR"])
+clean = sel[sel["VSH_LAR"] < 0.15]
+
+rows = []
+for phicol in ("PHID", "PHIND"):
+    for phi_min in (0.03, 0.06, 0.08):
+        f = fit_water_line(clean["RT"], clean[phicol], phi_min=phi_min)
+        rows.append({"porosity": phicol, "phi_min": phi_min, "m": round(f["m"], 2), "a*Rw": round(f["rw"], 4), "n": f["n_points"]})
+pd.DataFrame(rows)
+"""
+)
+
+md(
+    """
+With `PHIND` and a 6 % cutoff the fit gives `m ≈ 2.0` and `a·Rw ≈ 0.03`, stable
+across Vsh cutoffs (0.10–0.25 all give 1.93–1.97). The cleanest wet zones
+independently agree: 3580–3650 ft has Vsh < 0.15, phi ≈ 16 % and
+Rt ≈ 0.7–1.5 ohm-m, which at `m = 2` implies Rw ≈ 0.02–0.04. A 100,000 ppm
+NaCl brine at ~110 °F (roughly 4000 ft in central Kansas) has Rw ≈ 0.03, so
+the pick is physically reasonable. `n = 2` and `a = 1` are assumed, not fitted.
 """
 )
 
 code(
     """
-df["SW"] = archie_sw(df["RT"], df["PHID"], rw=RW, a=A, m=M, n=N)
+FIT = fit_water_line(clean["RT"], clean["PHIND"], phi_min=0.06)
+RW, A, M, N = round(FIT["rw"], 3), 1.0, round(FIT["m"], 1), 2.0
+print(f"pick: Rw = {RW}, a = {A}, m = {M}, n = {N}   (fit: m={FIT['m']:.2f}, a*Rw={FIT['rw']:.4f} from {FIT['n_points']} points)")
+
+ax = pickett_plot(clean["RT"], clean["PHIND"], rw=RW, a=A, m=M, n=N, color_by=clean.index.to_series().rename("depth"))
+env = FIT["envelope"]
+ax.scatter(10 ** env[:, 0], 10 ** env[:, 1], marker="x", color="k", s=40, zorder=5, label="5th-pct envelope")
+ax.set_xlim(0.02, 0.5); ax.set_ylim(0.5, 1000); ax.legend(fontsize=8)
+"""
+)
+
+md(
+    """
+## 6. Archie water saturation
+"""
+)
+
+code(
+    """
+df["SW"] = archie_sw(df["RT"], df["PHIND"], rw=RW, a=A, m=M, n=N)
 
 fig = plot_tracks(
     df,
@@ -193,14 +239,14 @@ fig = plot_tracks(
         {"curves": ["SW"], "xlim": (1, 0), "fill": "right", "title": "Sw (Archie)"},
     ],
     depth_range=DEPTH_RANGE,
-    title=f"Pearson #1-35 quick-look (matrix={MATRIX}, Rw={RW})",
+    title=f"Pearson #1-35 quick-look (matrix={MATRIX}, Rw={RW}, m={M})",
 )
 """
 )
 
 md(
     """
-## 6. Second well from the same operator
+## 7. Second well from the same operator
 
 `data/1045399712.csv` is PBW #1-32 (API 15-165-22116, Rush County, logged
 2015-09-25). It arrived as a whitespace-delimited export with classic-Mac line
@@ -221,11 +267,29 @@ fig = plot_tracks(pbw, tracks[:5], depth_range=(3000, 3850), title="PBW #1-32")
 
 md(
     """
-## 7. More wells from KGS
+## 8. Many wells at once
 
-`lasanalysis.kgs` fetches LAS files by KID and searches the KGS index by
-township / range / section. See the README for a walk-through; network access
-is deliberately not exercised in this notebook so it can run in CI.
+`lasanalysis.multiwell` runs this whole workflow over a batch: search the KGS
+index, fetch each LAS, analyse it with the parameters picked above, save a
+track plot, and write `summary.csv` (porosity, Sw, pay feet per well). From a
+shell:
+
+```
+python -m lasanalysis.multiwell --township 13 --range 22 --ew W --section 35 --out output/T13S_R22W_35
+python -m lasanalysis.multiwell --las data/1046139243.las --out output/pearson --depth 3400 4200
+```
+
+Network access is deliberately not exercised in this notebook so it can run
+in CI; the cell below runs the local-file path.
+"""
+)
+
+code(
+    """
+from lasanalysis.multiwell import run_well
+
+row = run_well("data/1046139243.las", "output/pearson", params={"rw": RW, "m": M}, depth_range=DEPTH_RANGE, plot=False)
+{k: row[k] for k in ("well_name", "depth_top", "depth_base", "phind_mean", "sw_mean", "pay_ft", "pay_top", "pay_base")}
 """
 )
 
