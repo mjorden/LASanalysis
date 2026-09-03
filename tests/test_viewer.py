@@ -35,6 +35,10 @@ def test_viewer_data_shape(pearson_df):
     assert d["depth_range"] == [3400.0, 4200.0]
     assert d["full_range"] == [0.0, 4360.75]
     assert d["params"]["rw"] == 0.03 and d["params"]["rho_ma"] == 2.71 and d["params"]["matrix"] == "limestone"
+    assert d["params"]["neutron_matrix"] == "limestone" and d["params"]["sw_model"] == "archie" and d["params"]["rsh"] is None
+    assert d["sw_models"] == ["archie", "simandoux", "indonesia"] and d["neutron_offsets"]["dolomite"] == -0.06
+    d2 = viewer_data(pearson_df, params={"sw_model": "simandoux", "rsh": 2.5, "neutron_matrix": "sandstone"})
+    assert d2["params"]["sw_model"] == "simandoux" and d2["params"]["rsh"] == 2.5 and d2["params"]["neutron_matrix"] == "sandstone"
     names = [c for t in d["tracks"] for c in t["curves"]]
     assert names[:2] == ["GR", "RT"] and "SW" in names and "VSH" in names and "PHID" in names
     # NaN -> null, never the JSON-invalid NaN literal
@@ -51,7 +55,7 @@ def test_build_html_is_self_contained_and_parseable(pearson_df):
     assert d["meta"]["api"] == "15-195-23011"
     assert d["curves"]["GR"][0] is None or isinstance(d["curves"]["GR"][0], float)
     # ids the JS wires up must exist exactly once
-    for el in ("logs", "pickett", "rw", "rw_s", "m_s", "matrix", "top", "base", "s_pay", "reset", "fullrange"):
+    for el in ("logs", "pickett", "rw", "rw_s", "m_s", "matrix", "neutron_matrix", "sw_model", "rsh", "top", "base", "s_pay", "reset", "fullrange"):
         assert html.count(f'id="{el}"') == 1, el
 
 

@@ -7,7 +7,7 @@ NaN, and returns a numpy array of the same shape. Porosities are fractions
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 
@@ -130,6 +130,150 @@ def archie_sw_lines(phi, rw: float, sw_values=(1.0, 0.5, 0.25, 0.1), a: float = 
     phi = _arr(phi)
     with np.errstate(divide="ignore", invalid="ignore"):
         return {sw: (a * rw) / (phi**m * sw**n) for sw in sw_values}
+
+
+#: First-order neutron lithology correction, fraction, relative to a limestone-
+#: scaled compensated-neutron reading: phi_true ~= phi_lime + offset[matrix].
+#: Chart-derived round numbers (Schlumberger CNL, ~20 pu); good to about +-2 pu.
+NEUTRON_MATRIX_OFFSET: Dict[str, float] = {"limestone": 0.0, "sandstone": 0.04, "dolomite": -0.06}
+
+
+def neutron_lithology_correction(phin, from_matrix: str = "limestone", to_matrix: str = "limestone") -> np.ndarray:
+    """Re-scale a neutron porosity (fraction) logged on ``from_matrix`` to ``to_matrix``.
+
+    Linear chart approximation via :data:`NEUTRON_MATRIX_OFFSET`; raises
+    ``ValueError`` for a matrix outside sandstone / limestone / dolomite —
+    there is no sensible neutron scale for salt or anhydrite, and a numeric
+    grain density says nothing about the tool's lithology response.
+    """
+    f, t = str(from_matrix).strip().lower(), str(to_matrix).strip().lower()
+    for k in (f, t):
+        if k not in NEUTRON_MATRIX_OFFSET:
+            raise ValueError(f"no neutron lithology correction for {k!r}; supported: {sorted(NEUTRON_MATRIX_OFFSET)}")
+    return _arr(phin) + (NEUTRON_MATRIX_OFFSET[t] - NEUTRON_MATRIX_OFFSET[f])
+
+
+def rwa(rt, phi, a: float = 1.0, m: float = 2.0) -> np.ndarray:
+    """Apparent water resistivity Rwa = Rt * phi^m / a (ohm-m). Equals Rw where Sw = 1."""
+    rt = _arr(rt)
+    phi = _arr(phi)
+    with np.errstate(invalid="ignore"):
+        out = rt * phi**m / a
+    return np.where((phi > 0) & (rt > 0), out, np.nan)
+
+
+def pick_rw_from_rwa(
+    rt,
+    phi,
+    vsh=None,
+    depth=None,
+    q: float = 5.0,
+    vsh_cut: float = 0.15,
+    phi_min: float = 0.06,
+    a: float = 1.0,
+    m: float = 2.0,
+    min_points: int = 20,
+) -> Dict[str, object]:
+    """Pick Rw as a low percentile of Rwa over clean, porous samples.
+
+    The wettest clean rock has Rwa ~ Rw; everything hydrocarbon-bearing has
+    Rwa > Rw. Taking the ``q``-th percentile rather than the minimum keeps a
+    single bad sample from setting the pick. Unlike :func:`fit_water_line`
+    this does not need a straight Pickett line, so it is the more robust
+    choice in mixed-lithology sections — at the cost of assuming ``m``.
+
+    Returns ``{"rw", "m", "a", "q", "n_points", "interval"}`` where
+    ``interval`` is ``(top, base)`` of the samples at or below the pick when
+    ``depth`` is given (else None). Raises ``ValueError`` with fewer than
+    ``min_points`` usable samples.
+    """
+    rt = _arr(rt)
+    phi = _arr(phi)
+    ok = np.isfinite(rt) & np.isfinite(phi) & (rt > 0) & (phi >= phi_min)
+    if vsh is not None:
+        v = _arr(vsh)
+        ok &= np.isfinite(v) & (v < vsh_cut)
+    n = int(ok.sum())
+    if n < min_points:
+        raise ValueError(f"only {n} clean porous samples (need {min_points})")
+    r = rwa(rt[ok], phi[ok], a=a, m=m)
+    pick = float(np.nanpercentile(r, q))
+    interval = None
+    if depth is not None:
+        d = _arr(depth)[ok][r <= pick]
+        if d.size:
+            interval = (float(np.nanmin(d)), float(np.nanmax(d)))
+    return {"rw": pick, "m": float(m), "a": float(a), "q": float(q), "n_points": n, "interval": interval}
+
+
+def pick_rsh(rt, vsh, vsh_min: float = 0.8, q: float = 50.0, min_points: int = 10) -> float:
+    """Shale resistivity: the ``q``-th percentile of Rt where Vsh >= ``vsh_min``."""
+    rt = _arr(rt)
+    v = _arr(vsh)
+    ok = np.isfinite(rt) & np.isfinite(v) & (rt > 0) & (v >= vsh_min)
+    if int(ok.sum()) < min_points:
+        raise ValueError(f"only {int(ok.sum())} shale samples with Vsh >= {vsh_min} (need {min_points})")
+    return float(np.percentile(rt[ok], q))
+
+
+def sw_simandoux(rt, phi, vsh, rw: float, rsh: float, a: float = 1.0, m: float = 2.0, n: float = 2.0, clip: bool = True) -> np.ndarray:
+    """Modified Simandoux water saturation.
+
+    Solves ``1/Rt = phi^m Sw^n / (a Rw) + Vsh Sw / Rsh`` for Sw. Closed form
+    for ``n = 2``; Newton iterations from the Archie estimate otherwise. With
+    ``Vsh = 0`` it reduces exactly to Archie.
+    """
+    if rw <= 0 or rsh <= 0:
+        raise ValueError("rw and rsh must be positive")
+    rt, phi, vsh = _arr(rt), _arr(phi), np.clip(_arr(vsh), 0.0, 1.0)
+    valid = (phi > 0) & (rt > 0) & np.isfinite(vsh)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        c = phi**m / (a * rw)  # coefficient of Sw^n
+        d = vsh / rsh          # coefficient of Sw
+        if n == 2:
+            sw = (np.sqrt(d**2 + 4.0 * c / rt) - d) / (2.0 * c)
+        else:
+            sw = archie_sw(rt, phi, rw, a=a, m=m, n=n, clip=False)
+            sw = np.where(np.isfinite(sw), sw, 1.0)
+            for _ in range(30):
+                f = c * sw**n + d * sw - 1.0 / rt
+                fp = n * c * sw ** (n - 1) + d
+                sw = np.clip(sw - f / fp, 1e-6, 10.0)
+    sw = np.where(valid, sw, np.nan)
+    return np.minimum(sw, 1.0) if clip else sw
+
+
+def sw_indonesia(rt, phi, vsh, rw: float, rsh: float, a: float = 1.0, m: float = 2.0, n: float = 2.0, clip: bool = True) -> np.ndarray:
+    """Indonesia (Poupon-Leveaux) water saturation.
+
+    ``1/sqrt(Rt) = [Vsh^(1 - Vsh/2) / sqrt(Rsh) + phi^(m/2) / sqrt(a Rw)] Sw^(n/2)``.
+    With ``Vsh = 0`` it reduces exactly to Archie.
+    """
+    if rw <= 0 or rsh <= 0:
+        raise ValueError("rw and rsh must be positive")
+    rt, phi, vsh = _arr(rt), _arr(phi), np.clip(_arr(vsh), 0.0, 1.0)
+    valid = (phi > 0) & (rt > 0) & np.isfinite(vsh)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        term = vsh ** (1.0 - vsh / 2.0) / np.sqrt(rsh) + phi ** (m / 2.0) / np.sqrt(a * rw)
+        sw = ((1.0 / np.sqrt(rt)) / term) ** (2.0 / n)
+    sw = np.where(valid, sw, np.nan)
+    return np.minimum(sw, 1.0) if clip else sw
+
+
+SW_MODELS = ("archie", "simandoux", "indonesia")
+
+
+def water_saturation(model: str, rt, phi, vsh, rw: float, rsh: Optional[float] = None, a: float = 1.0, m: float = 2.0, n: float = 2.0, clip: bool = True) -> np.ndarray:
+    """Dispatch on ``model`` (one of :data:`SW_MODELS`). Shaly models need ``rsh``."""
+    key = str(model).strip().lower()
+    if key == "archie":
+        return archie_sw(rt, phi, rw, a=a, m=m, n=n, clip=clip)
+    if key not in SW_MODELS:
+        raise ValueError(f"unknown Sw model {model!r}; choose from {SW_MODELS}")
+    if rsh is None or not np.isfinite(rsh):
+        raise ValueError(f"{key} needs rsh (shale resistivity); pick one with pick_rsh()")
+    fn = sw_simandoux if key == "simandoux" else sw_indonesia
+    return fn(rt, phi, vsh, rw, rsh, a=a, m=m, n=n, clip=clip)
 
 
 def fit_water_line(

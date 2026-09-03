@@ -38,6 +38,43 @@ def test_analyze_adds_what_the_curves_allow():
     assert "SW" in only_density  # falls back to PHID when there is no neutron
 
 
+def test_analyze_neutron_matrix_correction_and_sw_models():
+    import warnings
+
+    base = _frame(GR=65.0, RHOB=2.55, NPHI=10.0, RT=20.0)
+    lime = analyze(base)  # default: neutron and density both limestone -> no shift
+    assert lime["PHIN"].iloc[0] == pytest.approx(0.10) and lime.attrs["phin_corrected"] is True
+    ss = analyze(base, {"matrix": "sandstone"})
+    assert ss["PHIN"].iloc[0] == pytest.approx(0.14)  # limestone-scaled neutron -> sandstone
+    assert ss["PHID"].iloc[0] == pytest.approx((2.65 - 2.55) / 1.65)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        salt = analyze(base, {"matrix": "salt"})
+    assert salt["PHIN"].iloc[0] == pytest.approx(0.10) and salt.attrs["phin_corrected"] is False
+    assert any("no lithology correction" in str(x.message) for x in w)
+
+    # shaly-sand model with an explicit Rsh
+    shaly = _frame(GR=90.0, RHOB=2.5, NPHI=15.0, RT=5.0)
+    sim = analyze(shaly, {"sw_model": "simandoux", "rsh": 3.0})
+    assert sim.attrs["sw_model"] == "simandoux" and sim.attrs["rsh"] == 3.0
+    assert "SW_ARCHIE" in sim and (sim["SW"] < sim["SW_ARCHIE"]).all()
+    # Rsh auto-pick needs shale samples; a clean frame falls back to Archie with a warning
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        clean = analyze(_frame(GR=30.0, RHOB=2.5, NPHI=15.0, RT=5.0), {"sw_model": "indonesia"})
+    assert clean.attrs["sw_model"] == "archie" and "SW_ARCHIE" not in clean
+    assert any("falling back to Archie" in str(x.message) for x in w)
+
+
+def test_summarize_reports_both_rw_picks(tmp_path):
+    row = run_well(PEARSON, tmp_path, depth_range=(3400, 4200), plot=False)
+    assert 0.02 < row["rw_envelope"] < 0.05 and 1.8 < row["m_envelope"] < 2.2
+    assert 0.01 < row["rw_rwa"] < 0.1
+    assert "-" in row["rwa_interval"]
+    assert row["sw_model"] == "archie" and row["phin_corrected"] is True
+    assert json.loads(row["params"])["sw_model"] == "archie" and json.loads(row["params"])["rsh"] is None
+
+
 def test_default_tracks_only_uses_present_curves():
     t = default_tracks(["GR", "RT", "RHOB", "VSH", "SW"])
     names = [c for tr in t for c in tr["curves"]]
@@ -86,20 +123,28 @@ def test_run_well_html(tmp_path):
 def test_run_well_without_plot(tmp_path):
     row = run_well(PEARSON, tmp_path, plot=False, params={"rw": 0.05, "matrix": "dolomite"})
     assert row["png"] == ""
-    assert json.loads(row["params"]) == {**{k: DEFAULT_PARAMS[k] for k in ("a", "m", "n", "gr_clean", "gr_dirty")}, "rw": 0.05, "matrix": "dolomite"}
+    got = json.loads(row["params"])
+    assert got["rw"] == 0.05 and got["matrix"] == "dolomite" and got["m"] == DEFAULT_PARAMS["m"] and got["rsh"] is None
     assert not (tmp_path / "1046139243.png").exists()
 
 
 def test_run_search_chains_search_fetch_run_and_survives_failures(tmp_path):
     hits = [
-        {"kid": 1046139243, "well": "PEARSON FAMILY 1-35", "api": "15-195-23011", "las_url": "u1"},
-        {"kid": 999, "well": "BROKEN", "api": "x", "las_url": "u2"},
+        {"kid": 1046139243, "well": "PEARSON FAMILY 1-35", "api": "15-195-23011", "las_url": "u1", "well_kid": 1046105344},
+        {"kid": 999, "well": "BROKEN", "api": "x", "las_url": "u2", "well_kid": 1},
     ]
     calls = []
 
     def search(**kw):
         calls.append(("search", kw))
-        return hits
+        return [dict(h) for h in hits]  # fresh rows: add_well_info mutates in place
+
+    def well_info(rows, cache_dir=None, log=None):
+        calls.append(("well_info", [r["well_kid"] for r in rows]))
+        for r in rows:
+            if r["well_kid"] == 1046105344:
+                r.update({"lat": 38.880121, "lon": -99.7321228, "elevation": 2395.0, "status": "Plugged and Abandoned"})
+        return rows
 
     def fetch(kid, cache_dir, url=None):
         calls.append(("fetch", kid, url))
@@ -109,14 +154,35 @@ def test_run_search_chains_search_fetch_run_and_survives_failures(tmp_path):
 
     logs = []
     out = run_search({"township": 13, "range_": 22, "ew": "W", "section": 35}, tmp_path, "unused-cache",
-                     depth_range=(3400, 4200), search=search, fetch=fetch, log=logs.append, plot=False)
+                     depth_range=(3400, 4200), search=search, fetch=fetch, log=logs.append, plot=False, well_info=well_info)
     assert calls[0] == ("search", {"township": 13, "range_": 22, "ew": "W", "section": 35})
+    assert calls[1] == ("well_info", [1046105344, 1])
     assert ("fetch", 1046139243, "u1") in calls and ("fetch", 999, "u2") in calls
     assert list(out["kid"]) == [1046139243, 999]
     assert out.loc[0, "error"] == "" and out.loc[0, "well_name"] == "PEARSON FAMILY #1-35"
+    assert out.loc[0, "lat"] == pytest.approx(38.880121) and out.loc[0, "status"] == "Plugged and Abandoned"
+    assert np.isnan(out.loc[1, "lat"])
     assert out.loc[1, "error"].startswith("RuntimeError: no such file")
     assert (tmp_path / "summary.csv").exists()
+    assert (tmp_path / "wells.png").exists()  # #31: location map from the wells that have coordinates
     assert any("FAILED" in line for line in logs)
+
+    # coords=False skips the lookup and the map entirely
+    calls.clear()
+    out2 = run_search({"lease": "PEARSON"}, tmp_path / "nocoords", "unused-cache", search=search, fetch=fetch, log=logs.append,
+                      plot=False, coords=False, well_info=well_info)
+    assert not any(c[0] == "well_info" for c in calls) and "lat" not in out2.columns
+    assert not (tmp_path / "nocoords" / "wells.png").exists()
+
+
+def test_plot_wells(tmp_path):
+    from lasanalysis.multiwell import plot_wells
+
+    s = pd.DataFrame({"well": ["A", "B", "C"], "lat": [38.88, 38.44, np.nan], "lon": [-99.73, -99.23, np.nan], "pay_ft": [7.5, 120.5, 1.0]})
+    p = plot_wells(s, tmp_path / "m.png")
+    assert p.exists() and p.stat().st_size > 1000
+    with pytest.raises(ValueError):
+        plot_wells(s.iloc[2:], tmp_path / "n.png")
 
 
 def test_cli_local_files(tmp_path, capsys):
@@ -138,6 +204,11 @@ def test_parse_params():
 
     assert parse_params(["rw=0.04", "matrix=Dolomite", "m=2.2"]) == {"rw": 0.04, "matrix": "dolomite", "m": 2.2}
     assert parse_params(["matrix=2.68"]) == {"matrix": 2.68}
+    assert parse_params(["sw_model=Simandoux", "rsh=2.5", "neutron_matrix=sandstone"]) == {"sw_model": "simandoux", "rsh": 2.5, "neutron_matrix": "sandstone"}
+    with pytest.raises(ValueError, match="unknown Sw model"):
+        parse_params(["sw_model=waxman"])
+    with pytest.raises(ValueError, match="no neutron lithology correction"):
+        parse_params(["neutron_matrix=salt"])
     assert parse_params([]) == {}
     with pytest.raises(ValueError, match="unknown matrix 'chalk'"):
         parse_params(["matrix=chalk"])
