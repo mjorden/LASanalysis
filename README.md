@@ -29,6 +29,7 @@ end on every push.
 | `lasanalysis/plot.py` | `plot_tracks` (declarative tracks, one inverted depth axis, twin x-axes), `crossplot_neutron_density`, `pickett_plot` |
 | `lasanalysis/kgs.py` | `search_wells` (township / range / section / lease / operator), `fetch_las` (download a LAS by KID, cached) |
 | `lasanalysis/multiwell.py` | `run_well`, `run_search`, and a CLI: search → fetch → analyse → track plot + `summary.csv` per batch |
+| `lasanalysis/viewer.py` | `write_viewer`: one self-contained HTML file per well — zoomable shared-depth tracks, live Rw / m / n / matrix / cutoff sliders, Pickett panel |
 | `KansasLAS.ipynb` | The walk-through on the Pearson #1-35 well |
 | `data/` | Two wells from KGS (see below) |
 
@@ -119,6 +120,31 @@ of every well with an LAS file as
 [`ks_las_files.zip`](https://www.kgs.ku.edu/PRS/Ora_Archive/ks_las_files.zip)
 if you want to query offline.
 
+### Interactive viewer
+
+```bash
+python -m lasanalysis.viewer data/1046139243.las -o output/pearson.html --depth 3400 4200
+python -m lasanalysis.multiwell --las data/1046139243.las --out output/pearson --html   # one viewer per well
+```
+
+`write_viewer(las_or_df, out.html)` writes a single HTML file (≈1.3 MB for a
+17k-sample log; Plotly.js comes from cdnjs) with:
+
+* the same tracks as `plot_tracks`, on one shared depth axis — box- or
+  scroll-zoom any track and they all follow; double-click resets; a spike
+  line reads every curve at the cursor depth;
+* sidebar sliders for Rw, a, m, n, the matrix density (or a custom ρ<sub>ma</sub>),
+  ρ<sub>fluid</sub>, the GR clean/dirty picks and the pay cutoffs. Vsh, φ<sub>D</sub>,
+  φ<sub>N</sub>, φ<sub>ND</sub>, Sw and the green pay shading are recomputed in the
+  browser as you drag — the LAS data is embedded once, the petrophysics is a
+  few lines of JavaScript mirroring `petro.py`;
+* a Pickett panel of the clean points in the current depth window with the
+  iso-Sw lines for the current parameters, so you can see the wet line move
+  as you adjust Rw and m;
+* window statistics (samples, mean φ<sub>ND</sub>, mean Sw, pay feet).
+
+The file needs no server; open it in a browser or attach it to an email.
+
 ### Many wells at once
 
 ```bash
@@ -128,7 +154,8 @@ python -m lasanalysis.multiwell --las data/*.las --out output/local --param rw=0
 ```
 
 Each run writes one track plot and one `<kid>_derived.csv` (Vsh, PHID, PHIN,
-PHIND, Sw, PAY flag) per well, plus `summary.csv` with depth range, curves
+PHIND, Sw, PAY flag) per well (add `--html` for an interactive viewer each),
+plus `summary.csv` with depth range, curves
 found, mean porosity and Sw, pay feet (`phi > 8 %`, `Vsh < 0.3`, `Sw < 0.5`
 by default) and the parameters used. Fetched LAS files are cached under
 `--cache` (default `data/cache/`). A well that fails to download or parse gets

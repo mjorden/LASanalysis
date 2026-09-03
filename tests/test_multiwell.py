@@ -75,6 +75,14 @@ def test_run_well_on_pearson(tmp_path):
     assert len(derived) == 3201
 
 
+def test_run_well_html(tmp_path):
+    row = run_well(PEARSON, tmp_path, depth_range=(3400, 4200), plot=False, html=True, meta={"kid": 1046139243, "api": "15-195-23011"})
+    assert row["html"] == "1046139243.html"
+    html = (tmp_path / "1046139243.html").read_text(encoding="utf-8")
+    assert '"well":"PEARSON FAMILY #1-35"' in html and '"api":"15-195-23011"' in html
+    assert row["png"] == ""
+
+
 def test_run_well_without_plot(tmp_path):
     row = run_well(PEARSON, tmp_path, plot=False, params={"rw": 0.05, "matrix": "dolomite"})
     assert row["png"] == ""

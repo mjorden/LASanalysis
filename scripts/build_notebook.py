@@ -293,6 +293,26 @@ row = run_well("data/1046139243.las", "output/pearson", params={"rw": RW, "m": M
 """
 )
 
+md(
+    """
+## 9. Interactive viewer
+
+`lasanalysis.viewer` writes a self-contained HTML page: the same tracks on one
+zoomable depth axis, with Rw / a / m / n, the matrix density, the GR picks and
+the pay cutoffs as live sliders — Vsh, porosity, Sw, pay shading and a Pickett
+panel recompute in the browser. Open the file below in a browser tab (it is
+too dynamic to embed usefully here).
+"""
+)
+
+code(
+    """
+from lasanalysis.viewer import write_viewer
+
+write_viewer("data/1046139243.las", "output/pearson.html", params={"rw": RW, "m": M}, depth_range=DEPTH_RANGE)
+"""
+)
+
 nb = nbf.v4.new_notebook()
 nb["cells"] = cells
 nb["metadata"] = {
