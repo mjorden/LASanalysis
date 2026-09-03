@@ -27,6 +27,10 @@ WELLS = [
         "logged": "2016-11-21",
         "depth_range": (3400, 4200),
         "meta": None,  # taken from the LAS header
+        # Pickett envelope, Vsh < 0.15, N-D porosity >= 6 %: m = 1.96, a*Rw = 0.031;
+        # clean wet zone 3580-3650 ft gives Rw 0.02-0.04 at m = 2.
+        "params": {"rw": 0.03, "m": 2.0},
+        "pick": "Rw 0.03, m 2.0 from the Pickett envelope; wet zone 3580–3650 ft agrees",
     },
     {
         "page": "pbw.html",
@@ -40,6 +44,12 @@ WELLS = [
         "meta": {"well": "PBW #1-32", "uwi": "15-165-22116-00-00", "county": "RUSH", "state": "KANSAS",
                  "operator": "DOWNING NELSON OIL CO. INC.", "service": "CASEDHOLE SOLUTIONS", "date": "2015-09-25",
                  "file": "1045399712.csv"},
+        # The envelope fit is unstable here (mixed lithology, N-D porosity to 39 %):
+        # m ranges 0.4-2.8 with the cut. The cleanest cut (Vsh < 0.10, N-D porosity
+        # >= 6 %) gives m = 1.99, a*Rw = 0.063, and the clean wet zones at
+        # 3250-3340 ft (phi 15-17 %, Rt 1.7-2.8) give Rw 0.05-0.066 at m = 2.
+        "params": {"rw": 0.06, "m": 2.0},
+        "pick": "Rw 0.06, m 2.0 from wet zones 3250–3340 ft; the Pickett envelope is unstable in this mixed section",
     },
 ]
 
@@ -64,11 +74,11 @@ shared-depth tracks, live Rw / m / n / matrix sliders, pay shading, Pickett plot
 {cards}
 <p class="fine">Source and method: <a href="{repo}">{repo}</a>. Data from the
 <a href="https://www.kgs.ku.edu/Magellan/Logs/">KGS LAS File Database</a> (courtesy KCC), operator Downing-Nelson Oil Co. Inc.
-Rw = 0.03 and m = 2.0 were picked from the Pearson Pickett envelope; a = 1, n = 2 assumed. Not a reserves estimate.</p>
+Rw and m are picked per well from its own Pickett plot and wet zones (shown on each card); a = 1, n = 2 assumed. Not a reserves estimate.</p>
 </main></body></html>
 """
 
-CARD = """<a class="well" href="{page}"><b>{well}</b><small>API {api} · {location} · logged {logged} · KGS KID {kid} · viewer opens at {top}–{base} ft</small></a>"""
+CARD = """<a class="well" href="{page}"><b>{well}</b><small>API {api} · {location} · logged {logged} · KGS KID {kid} · viewer opens at {top}–{base} ft</small><small>{pick}</small></a>"""
 
 
 def build(site_dir: Path) -> list:
@@ -78,13 +88,13 @@ def build(site_dir: Path) -> list:
         src = w["source"]
         if src.suffix.lower() == ".csv":
             df = standardize(read_log_csv(src))
-            out = write_viewer(df, site_dir / w["page"], depth_range=w["depth_range"], meta=w["meta"], title=w["well"])
+            out = write_viewer(df, site_dir / w["page"], params=w["params"], depth_range=w["depth_range"], meta=w["meta"], title=w["well"])
         else:
-            out = write_viewer(src, site_dir / w["page"], depth_range=w["depth_range"], title=w["well"])
+            out = write_viewer(src, site_dir / w["page"], params=w["params"], depth_range=w["depth_range"], title=w["well"])
         written.append(out)
     cards = "\n".join(
         CARD.format(page=w["page"], well=html.escape(w["well"]), api=w["api"], location=html.escape(w["location"]),
-                    logged=w["logged"], kid=w["kid"], top=w["depth_range"][0], base=w["depth_range"][1])
+                    logged=w["logged"], kid=w["kid"], top=w["depth_range"][0], base=w["depth_range"][1], pick=html.escape(w["pick"]))
         for w in WELLS
     )
     index = site_dir / "index.html"

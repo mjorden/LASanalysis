@@ -99,6 +99,15 @@ source and cutoff — below ~6 % porosity the envelope flattens and the apparent
 `m` drops toward 1.3). The clean wet zone at 3580–3650 ft agrees. `a = 1` and
 `n = 2` are assumed.
 
+For PBW #1-32 the envelope fit alone is unreliable — the 3000–3850 ft section
+mixes lithologies (N-D porosity runs to 39 %) and `m` swings from 0.4 to 2.8
+with the cut. The cleanest cut (Vsh < 0.10, φND ≥ 6 %) gives `m = 1.99`,
+`a·Rw = 0.063`, and the clean wet zones at 3250–3340 ft (φ ≈ 15–17 %, Rt
+1.7–2.8 ohm-m) give Rw 0.05–0.066 at `m = 2`, so PBW uses **Rw = 0.06,
+m = 2.0**. Each Pages viewer opens with its own well's picks
+(`scripts/build_site.py`); `multiwell.DEFAULT_PARAMS` still carries the
+Pearson values, so pass `--param rw=…` for other wells.
+
 ### More wells from KGS
 
 ```python
