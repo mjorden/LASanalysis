@@ -8,6 +8,8 @@ petro      pure-numpy petrophysics: Vshale, density porosity, crossover, Archie 
 plot       track plots, neutron-density crossplot, Pickett plot
 kgs        search the Kansas Geological Survey LAS index, fetch LAS files by KID
 multiwell  run the workflow over many wells (search -> fetch -> analyse -> summary.csv)
+samples    lab samples (SRA / Rock-Eval, XRD, core): long table, validation,
+           depth shift, joins to the log, sample markers on plots
 """
 
 from .load import ALIASES, clean_frame, curves, find_curve, read_las, read_log_csv, standardize
@@ -31,9 +33,29 @@ from .petro import (
     water_saturation,
 )
 from .plot import crossplot_neutron_density, pickett_plot, plot_tracks
+from .samples import (
+    ANALYTES,
+    apply_shift,
+    depth_shift,
+    join_to_log,
+    read_samples,
+    sample_tracks,
+    samples_on_grid,
+    to_wide,
+    validate_samples,
+)
 
 __all__ = [
     "ALIASES",
+    "ANALYTES",
+    "apply_shift",
+    "depth_shift",
+    "join_to_log",
+    "read_samples",
+    "sample_tracks",
+    "samples_on_grid",
+    "to_wide",
+    "validate_samples",
     "MATRIX_DENSITY",
     "NEUTRON_MATRIX_OFFSET",
     "SW_MODELS",

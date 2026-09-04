@@ -1,0 +1,3 @@
+api,depth_top,depth_base,sample_type,lab,method,source,TOC,S1,S2,S3,Tmax,Ro
+15-195-23011,3612.0,3612.5,core,Example Lab,Rock-Eval 6,Report 2026-001,2.41,0.35,4.10,0.42,438,0.62
+15-195-23011,3640.0,3650.0,cuttings,Example Lab,SRA,Report 2026-001,1.05,0.12,1.40,0.51,433,

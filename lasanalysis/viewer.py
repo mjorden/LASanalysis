@@ -59,8 +59,14 @@ def _well_meta(las) -> Dict[str, str]:
 
 
 def viewer_data(df: pd.DataFrame, meta: Optional[dict] = None, params: Optional[dict] = None,
-                depth_range: Optional[tuple] = None, title: Optional[str] = None) -> dict:
-    """Everything the page needs, as plain JSON-able Python."""
+                depth_range: Optional[tuple] = None, title: Optional[str] = None,
+                samples=None, sample_analytes=("TOC",), sample_shift: float = 0.0) -> dict:
+    """Everything the page needs, as plain JSON-able Python.
+
+    ``samples`` (long or wide table from :mod:`lasanalysis.samples`) adds a
+    track of lab-sample markers for ``sample_analytes``, shifted by
+    ``sample_shift`` ft (see :func:`~lasanalysis.samples.depth_shift`).
+    """
     p = {**DEFAULT_PARAMS, **(params or {})}
     present = [c for c in STANDARD_CURVES if c in df.columns and df[c].notna().any()]
     derived_present = []
@@ -75,6 +81,10 @@ def viewer_data(df: pd.DataFrame, meta: Optional[dict] = None, params: Optional[
     if "RT" in present and ("RHOB" in present or "NPHI" in present):
         derived_present.append("SW")
     tracks = default_tracks(present + derived_present)
+    if samples is not None:
+        from .samples import sample_tracks
+
+        tracks += sample_tracks(samples, sample_analytes, shift=sample_shift)
     if not tracks:
         raise ValueError(
             "no recognised curves to display; need at least one of " + ", ".join(STANDARD_CURVES) + f" (columns: {list(df.columns)})"
@@ -108,9 +118,12 @@ def viewer_data(df: pd.DataFrame, meta: Optional[dict] = None, params: Optional[
 
 def build_viewer_html(df: pd.DataFrame, meta: Optional[dict] = None, params: Optional[dict] = None,
                       depth_range: Optional[tuple] = None, title: Optional[str] = None,
-                      plotlyjs: str = PLOTLY_CDN) -> str:
-    """Render the viewer page for a standardised frame. Returns the HTML as a string."""
-    data = viewer_data(df, meta, params, depth_range, title)
+                      plotlyjs: str = PLOTLY_CDN, **sample_kwargs) -> str:
+    """Render the viewer page for a standardised frame. Returns the HTML as a string.
+
+    ``sample_kwargs`` (``samples``, ``sample_analytes``, ``sample_shift``) go to :func:`viewer_data`.
+    """
+    data = viewer_data(df, meta, params, depth_range, title, **sample_kwargs)
     blob = json.dumps(data, allow_nan=False, separators=(",", ":")).replace("</", "<\\/")
     return (
         _TEMPLATE.replace("__TITLE__", _esc(data["title"]))
@@ -120,8 +133,11 @@ def build_viewer_html(df: pd.DataFrame, meta: Optional[dict] = None, params: Opt
 
 
 def write_viewer(source, out_html, params: Optional[dict] = None, depth_range: Optional[tuple] = None,
-                 title: Optional[str] = None, meta: Optional[dict] = None, plotlyjs: str = PLOTLY_CDN) -> Path:
-    """``source`` is a LAS path or an already-standardised DataFrame. Writes ``out_html`` and returns its path."""
+                 title: Optional[str] = None, meta: Optional[dict] = None, plotlyjs: str = PLOTLY_CDN, **sample_kwargs) -> Path:
+    """``source`` is a LAS path or an already-standardised DataFrame. Writes ``out_html`` and returns its path.
+
+    Pass ``samples=`` (and optionally ``sample_analytes=``, ``sample_shift=``) to add lab-sample markers.
+    """
     if isinstance(source, pd.DataFrame):
         df = source
         meta = meta or {}
@@ -131,7 +147,7 @@ def write_viewer(source, out_html, params: Optional[dict] = None, depth_range: O
         meta = {**_well_meta(las), "file": Path(source).name, **(meta or {})}
     out = Path(out_html)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(build_viewer_html(df, meta, params, depth_range, title, plotlyjs), encoding="utf-8")
+    out.write_text(build_viewer_html(df, meta, params, depth_range, title, plotlyjs, **sample_kwargs), encoding="utf-8")
     return out
 
 
@@ -310,7 +326,7 @@ function buildLogs() {
   tracks.forEach((t, k) => {
     const ax = k+1, xid = "x"+(ax>1?ax:""), yid = "y"+(ax>1?ax:"");
     const x0 = k*(w+gap);
-    const xl = Array.isArray(t.xlim) && Array.isArray(t.xlim[0]) ? t.xlim : t.curves.map(()=>t.xlim);
+    const xl = Array.isArray(t.xlim) && Array.isArray(t.xlim[0]) ? t.xlim : (t.curves.length ? t.curves : [null]).map(()=>t.xlim);
     const tcolor = t.twin ? (COLORS[t.curves[0]]||"#333") : "#333";
     layout["xaxis"+(ax>1?ax:"")] = {domain:[x0, x0+w], side:"top", title:{text:t.title || t.curves.join(" / "), font:{size:11}},
       type: t.log ? "log" : "linear", range: t.log ? [Math.log10(xl[0][0]), Math.log10(xl[0][1])] : xl[0], gridcolor:"#eee", zeroline:false,
@@ -332,6 +348,11 @@ function buildLogs() {
       if (t.fill && j===0) { tr.fill = "tozerox"; tr.fillcolor = hexA(COLORS[name]||"#333", 0.12); }
       LOG_TRACES.push({name:name, index:traces.length, derived: !!derived[name] && !C[name]});
       traces.push(tr);
+    });
+    (t.points || []).forEach(pt => {   // lab samples (core / cuttings) as markers
+      traces.push({x: pt.value, y: pt.depth, xaxis: xid, yaxis: yid, mode:"markers", name: pt.label,
+        marker:{size:7, color: pt.color || "#000", line:{color:"#fff", width:0.8}},
+        hovertemplate: pt.label + ": %{x:.3g}<br>depth %{y:.1f}<extra></extra>"});
     });
     if (t.curves[0]==="SW") {
       // Plotly does not break a tozerox fill at null gaps, so pay is a 0/1 step

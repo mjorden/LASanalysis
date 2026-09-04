@@ -1,0 +1,3 @@
+api,depth_top,depth_base,sample_type,lab,method,source,quartz,k_feldspar,plagioclase,calcite,dolomite,pyrite,illite,mixed_layer,kaolinite,chlorite,total_clay
+15-195-23011,3612.0,3612.5,core,Example Lab,XRD Rietveld,Report 2026-001,38.0,3.0,5.0,12.0,4.0,2.0,22.0,8.0,3.0,3.0,36.0
+15-195-23011,3640.0,3650.0,cuttings,Example Lab,XRD Rietveld,Report 2026-001,12.0,1.0,2.0,70.0,9.0,1.0,3.0,1.0,0.5,0.5,5.0
