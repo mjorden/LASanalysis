@@ -89,20 +89,25 @@ def plot_tracks(
     axes[0].set_ylabel(f"Depth [{df.index.name or 'DEPT'}]")
 
     for ax, spec in zip(axes, tracks):
-        curves: List[str] = list(spec["curves"])
+        curves: List[str] = list(spec.get("curves", []))
+        points = list(spec.get("points", []) or [])
+        if not curves and not points:
+            raise ValueError("a track needs curves or points")
         missing = [c for c in curves if c not in df.columns]
         if missing:
             raise KeyError(f"curves not in data: {missing}")
         k = len(curves)
-        xlims = _per_curve(spec.get("xlim"), k, "xlim")
+        xlims = _per_curve(spec.get("xlim"), k, "xlim") if k else []
         colors = spec.get("colors") or _DEFAULT_COLORS[:k]
         twin = bool(spec.get("twin", False))
         log = bool(spec.get("log", False))
 
-        ax.set_title(spec.get("title", " / ".join(curves)))
+        ax.set_title(spec.get("title", " / ".join(curves) or "samples"))
         ax.grid(True, which="both", linewidth=0.3, alpha=0.6)
         if log:
             ax.set_xscale("log")
+        if not curves and "xlim" in spec:
+            ax.set_xlim(*spec["xlim"])
 
         first_ax = ax
         for i, (name, color) in enumerate(zip(curves, colors)):
@@ -125,7 +130,10 @@ def plot_tracks(
             lo, hi = ax.get_xlim()
             edge = lo if fill == "left" else hi
             ax.fill_betweenx(depth, x, edge, where=~np.isnan(x), color=colors[0], alpha=0.15, linewidth=0)
-        if not twin and k > 1:
+        for pt in points:  # discrete samples (core / cuttings) on this track
+            ax.scatter(pt["value"], pt["depth"], s=pt.get("size", 22), color=pt.get("color", "k"), marker=pt.get("marker", "o"),
+                       edgecolor="white", linewidth=0.5, zorder=5, label=pt.get("label"))
+        if (not twin and k > 1) or points:
             ax.legend(fontsize=7, loc="upper right")
 
     if title:

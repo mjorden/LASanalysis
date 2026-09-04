@@ -94,6 +94,21 @@ def test_viewer_renders_and_reacts(browser, page_url):
     page.close()
 
 
+def test_sample_markers_render(browser, tmp_path_factory):
+    import pandas as pd
+
+    from lasanalysis.samples import read_samples
+
+    sra = read_samples(pd.DataFrame({"api": ["15-195-23011"] * 3, "depth": [3500.0, 3612.0, 3800.0], "TOC": [0.8, 2.4, 1.1]}))
+    out = write_viewer(PEARSON, tmp_path_factory.mktemp("viewer_s") / "s.html", depth_range=(3400, 4200), samples=sra)
+    page = browser.new_page()
+    page.goto(out.resolve().as_uri())
+    page.wait_for_function("() => window.Plotly && document.getElementById('logs').data && document.getElementById('logs').data.length > 0", timeout=30000)
+    got = page.evaluate("() => document.getElementById('logs').data.filter(t => t.mode === 'markers').map(t => ({name: t.name, x: t.x, y: t.y}))")
+    assert got == [{"name": "TOC [wt%]", "x": [0.8, 2.4, 1.1], "y": [3500.0, 3612.0, 3800.0]}]
+    page.close()
+
+
 def test_embedded_data_matches_page_state(browser, page_url):
     page = browser.new_page()
     page.goto(page_url)

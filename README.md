@@ -58,6 +58,7 @@ inverted depth axis set exactly once.*
 | KGS client | `lasanalysis.kgs` | Search (online or offline index), fetch by KID, well coordinates and header |
 | Batch | `lasanalysis.multiwell` | search → fetch → analyse → `summary.csv` + track plot (+ viewer) per well, location map |
 | Pages site | `lasanalysis.site` | Builds the live viewers on every push |
+| Lab samples | `lasanalysis.samples` | SRA / Rock-Eval, XRD and core results as a validated long table; depth shift; joins to the log; markers on plots. [Details](docs/samples.md) |
 
 ### Picking Rw and m from the log
 
@@ -100,6 +101,9 @@ see the [KGS data resources page](https://www.kgs.ku.edu/General/dataLib.html).
 - [docs/kgs.md](docs/kgs.md) — the KGS data sources: the two kinds of KID,
   URL patterns, the search and well pages, the offline index and its quirks,
   what the client refuses to do.
+- [docs/samples.md](docs/samples.md) — lab samples (SRA / Rock-Eval, XRD,
+  core): the long table, validation, depth shifting, joins to the log,
+  sample markers on plots. Layer 1 of the geochemistry roadmap.
 - [RFC #32](https://github.com/mjorden/LASanalysis/issues/32) — the planned
   basin-scale geochemistry (SRA / Rock-Eval, XRD) layer.
 - [`KansasLAS.ipynb`](KansasLAS.ipynb) — the worked example.
